@@ -174,14 +174,9 @@ function createTray() {
 }
 
 function createTrayImage() {
-  const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
-      <rect width="32" height="32" rx="8" fill="#121419"/>
-      <circle cx="16" cy="16" r="10" fill="#45d483"/>
-      <circle cx="16" cy="16" r="5" fill="#121419"/>
-    </svg>
-  `;
-  const image = nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`);
+  const trayPng =
+    "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAL2SURBVFhH1Vc/aBNRGM/oFnOXa+5C2wv+qVpbbKPSGmm1EhE6SAeRQgWlUAgUVKxIHISA4KQILtmcBNFFJ51EcNFJF8HR0dHR8Xy/y7tr3nu/d7lEOvjBj0De937f3/d9SeG/FccZW3Tdyvl+yKO9Ec/z/JLrtxw3eO+Ug8iGUjn4XHKDdrFSqcmr/ybFYrhfEHaE8T/M4AB04bikGl6QVqfs/ybEuQHHS+XquqTML45XuTFi1BTIoqQeLDDOSPpRrR+LJpunUowvzlK9foiAnkoTdkHasyI/2roULb3biS5+f2hg+cO9aObu5citjtO7gOBuSVOmoGFsNUfEjdfb1LAOODixPG9wAAiu6FXnpElVkCJ26fC1laj5tUONZWH65qrBBZTK/htpclfkOzdSj8hHMZ4A/aFzAkYWMDyYYt6027Dy6X7k1UKDV6ArTfcEE0xXQsMx0gRn396KzrxoxZ/sPEH9yYbCC4iAf0nTvWmnKwDoakZ44cuDqLa6oOhOnJsXzXeH6qOELAtpGbBY9EO8a0YGhJa6VuvT1n45sNYw9NMJ6brBmn546OoSJWq82lb0dJzubtJ7lhdxO3YAw0E/PLLZpERzj9YVPR3HxSBi9zCgdN10PCMV+iHePiNaeL6l6OmoP96g9ywOtGMHeltPPcQkY0SocTA7pegmwAjGs2P3UFLjjtg5sQO9EaweggzdzsjQB2NTBw39k8+uU30gmCFOi+aPHYCIL37qCqg3IwPg3InOlbjm+LRFDmBO6NyYumEY7pPm+R5AlFnEeYCSsVVt7AMMBV0JwPtlxHlhW0h4+tL0rsArppxViixYX4zrf5MmVbFlAcCztDWlDqTdFjlAo0/EthUB9ASWDzOaIOvHiIS6BZmIFL0kF1PgSWFSYrgkwObEbwemnwAbV+l8m0BpkBPDAsaxdaWJfIJZzchGQDdX5EzkmP6oEeaCeFU/MhtuGIlXtigL+91oAP8fkzm/F9L77xC0UaJ+4PvhUl0o/AVHY9dvalvirAAAAABJRU5ErkJggg==";
+  const image = nativeImage.createFromDataURL(`data:image/png;base64,${trayPng}`);
   image.setTemplateImage(false);
   return image;
 }
