@@ -5,8 +5,10 @@ const {
   Menu,
   desktopCapturer,
   ipcMain,
+  nativeImage,
   shell,
   session,
+  Tray,
 } = require("electron");
 
 const CHAT_URL = "https://chat.vlanya.ru";
@@ -19,8 +21,15 @@ const ALLOWED_HOSTS = new Set([
 
 let mainWindow = null;
 let pickerWindow = null;
+let tray = null;
+let isQuitting = false;
 let currentPickerResolve = null;
 let currentSources = [];
+
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+}
 
 function isAllowedUrl(value) {
   if (!value) return false;
@@ -146,7 +155,71 @@ function createMainWindow() {
     shell.openExternal(url);
   });
 
+  mainWindow.on("close", (event) => {
+    if (isQuitting) return;
+    event.preventDefault();
+    mainWindow.hide();
+  });
+
   mainWindow.loadURL(CHAT_URL);
+}
+
+function createTray() {
+  if (tray) return;
+  tray = new Tray(createTrayImage());
+  tray.setToolTip("Vlanya Element");
+  tray.setContextMenu(buildTrayMenu());
+  tray.on("click", toggleMainWindow);
+  tray.on("double-click", showMainWindow);
+}
+
+function createTrayImage() {
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+      <rect width="32" height="32" rx="8" fill="#121419"/>
+      <circle cx="16" cy="16" r="10" fill="#45d483"/>
+      <circle cx="16" cy="16" r="5" fill="#121419"/>
+    </svg>
+  `;
+  const image = nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`);
+  image.setTemplateImage(false);
+  return image;
+}
+
+function showMainWindow() {
+  if (!mainWindow) {
+    createMainWindow();
+    return;
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function hideMainWindow() {
+  mainWindow?.hide();
+}
+
+function toggleMainWindow() {
+  if (!mainWindow || !mainWindow.isVisible()) {
+    showMainWindow();
+  } else {
+    hideMainWindow();
+  }
+}
+
+function quitApp() {
+  isQuitting = true;
+  app.quit();
+}
+
+function buildTrayMenu() {
+  return Menu.buildFromTemplate([
+    { label: "Показать", click: showMainWindow },
+    { label: "Скрыть", click: hideMainWindow },
+    { type: "separator" },
+    { label: "Выйти", click: quitApp },
+  ]);
 }
 
 function sourceToView(source) {
@@ -251,7 +324,8 @@ function buildMenu() {
           click: () => mainWindow?.webContents.toggleDevTools(),
         },
         { type: "separator" },
-        { label: "Выйти", role: "quit" },
+        { label: "Свернуть в трей", click: hideMainWindow },
+        { label: "Выйти", click: quitApp },
       ],
     },
   ]);
@@ -260,12 +334,22 @@ function buildMenu() {
 app.whenReady().then(() => {
   app.setAppUserModelId("ru.vlanya.element");
   Menu.setApplicationMenu(buildMenu());
+  createTray();
   createMainWindow();
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
+    showMainWindow();
   });
 });
 
+app.on("second-instance", () => {
+  showMainWindow();
+});
+
+app.on("before-quit", () => {
+  isQuitting = true;
+});
+
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
+  if (process.platform === "darwin") return;
+  if (isQuitting) app.quit();
 });
