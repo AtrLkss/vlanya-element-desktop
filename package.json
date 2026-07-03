@@ -1,6 +1,6 @@
 {
   "name": "vlanya-element-desktop",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "Vlanya Element desktop wrapper with Windows screen-share audio loopback.",
   "main": "src/main.js",
