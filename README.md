@@ -10,12 +10,9 @@ Element Desktop installation.
 Microphone capture is also patched to request browser-side `noiseSuppression`,
 `echoCancellation`, and `autoGainControl` for calls.
 
-The message composer gets a compact dark accent style with a red focus bar and
-caret inside the Electron wrapper.
-
-Call videos can be opened fullscreen with a double-click or the small `[]`
-overlay button, including webcam tiles that Element does not normally expose
-like screen shares.
+The chat UI customizations live in the Vlanya Element Web build served from the
+server. This desktop wrapper only handles native Windows capture behavior,
+tray/background behavior, and media constraints.
 
 ## Run
 
