@@ -12,6 +12,7 @@ const {
 } = require("electron");
 
 const CHAT_URL = "https://chat.vlanya.ru";
+const PRELOAD_PATH = path.join(__dirname, "preload.js");
 const ALLOWED_HOSTS = new Set([
   "chat.vlanya.ru",
   "call.vlanya.ru",
@@ -25,6 +26,7 @@ let tray = null;
 let isQuitting = false;
 let currentPickerResolve = null;
 let currentSources = [];
+const configuredWebContents = new WeakSet();
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
@@ -50,6 +52,43 @@ function getOriginFromDetails(details) {
     details?.embeddingOrigin ||
     ""
   );
+}
+
+function getAppWebPreferences() {
+  return {
+    preload: PRELOAD_PATH,
+    partition: "persist:vlanya-element",
+    nodeIntegration: false,
+    contextIsolation: false,
+    nodeIntegrationInSubFrames: true,
+    sandbox: false,
+    spellcheck: true,
+  };
+}
+
+function configureAppWebContents(contents) {
+  if (!contents || configuredWebContents.has(contents)) return;
+  configuredWebContents.add(contents);
+
+  contents.setWindowOpenHandler(({ url }) => {
+    if (isAllowedUrl(url)) {
+      return {
+        action: "allow",
+        overrideBrowserWindowOptions: {
+          backgroundColor: "#101114",
+          webPreferences: getAppWebPreferences(),
+        },
+      };
+    }
+    shell.openExternal(url);
+    return { action: "deny" };
+  });
+
+  contents.on("will-navigate", (event, url) => {
+    if (isAllowedUrl(url)) return;
+    event.preventDefault();
+    shell.openExternal(url);
+  });
 }
 
 function configureSession(ses) {
@@ -132,28 +171,10 @@ function createMainWindow() {
     minHeight: 640,
     title: "Vlanya Element",
     backgroundColor: "#101114",
-    webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
-      partition: "persist:vlanya-element",
-      nodeIntegration: false,
-      contextIsolation: false,
-      nodeIntegrationInSubFrames: true,
-      sandbox: false,
-      spellcheck: true,
-    },
+    webPreferences: getAppWebPreferences(),
   });
 
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (isAllowedUrl(url)) return { action: "allow" };
-    shell.openExternal(url);
-    return { action: "deny" };
-  });
-
-  mainWindow.webContents.on("will-navigate", (event, url) => {
-    if (isAllowedUrl(url)) return;
-    event.preventDefault();
-    shell.openExternal(url);
-  });
+  configureAppWebContents(mainWindow.webContents);
 
   mainWindow.on("close", (event) => {
     if (isQuitting) return;
@@ -328,6 +349,9 @@ function buildMenu() {
 
 app.whenReady().then(() => {
   app.setAppUserModelId("ru.vlanya.element");
+  app.on("web-contents-created", (_event, contents) => {
+    configureAppWebContents(contents);
+  });
   Menu.setApplicationMenu(buildMenu());
   createTray();
   createMainWindow();

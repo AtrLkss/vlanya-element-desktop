@@ -137,6 +137,30 @@
         cursor: zoom-in !important;
       }
 
+      .vlanya-video-fullscreen-button {
+        position: fixed;
+        z-index: 2147483647;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        border-radius: 7px;
+        background: rgba(12, 13, 17, 0.82);
+        color: #f4f6fb;
+        font: 700 16px/1 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        cursor: zoom-in;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.36);
+        backdrop-filter: blur(8px);
+      }
+
+      .vlanya-video-fullscreen-button:hover {
+        border-color: rgba(255, 58, 58, 0.74);
+        background: rgba(28, 18, 20, 0.94);
+        color: #ffffff;
+      }
+
       video.vlanya-video-fullscreen-ready:fullscreen {
         width: 100vw !important;
         height: 100vh !important;
@@ -150,16 +174,45 @@
     document.head.appendChild(style);
   };
 
+  const getVideos = () => Array.from(document.querySelectorAll("video"));
+
   const markFullscreenVideos = () => {
-    document.querySelectorAll("video").forEach((video) => {
+    getVideos().forEach((video) => {
       video.classList.add("vlanya-video-fullscreen-ready");
       video.setAttribute("data-vlanya-fullscreen-video", "true");
+      video.title = video.title || "Double-click to open fullscreen";
     });
+  };
+
+  const isUsableVideo = (video) => {
+    if (!video || video.readyState < 1) return false;
+    const rect = video.getBoundingClientRect();
+    return rect.width >= 80 && rect.height >= 60;
+  };
+
+  const rectContainsPoint = (rect, x, y) => {
+    return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+  };
+
+  const findVideoAtPoint = (x, y) => {
+    const elements = document.elementsFromPoint?.(x, y) || [];
+
+    for (const element of elements) {
+      if (element instanceof HTMLVideoElement && isUsableVideo(element)) return element;
+    }
+
+    for (const element of elements) {
+      const candidates = element.querySelectorAll ? Array.from(element.querySelectorAll("video")) : [];
+      const match = candidates.find((video) => isUsableVideo(video) && rectContainsPoint(video.getBoundingClientRect(), x, y));
+      if (match) return match;
+    }
+
+    return getVideos().find((video) => isUsableVideo(video) && rectContainsPoint(video.getBoundingClientRect(), x, y)) || null;
   };
 
   const findVideoFromEvent = (event) => {
     const path = event.composedPath?.() || [];
-    return path.find((node) => node instanceof HTMLVideoElement) || null;
+    return path.find((node) => node instanceof HTMLVideoElement) || findVideoAtPoint(event.clientX, event.clientY);
   };
 
   const requestVideoFullscreen = async (video) => {
@@ -181,6 +234,48 @@
     }
   };
 
+  const ensureVideoFullscreenButton = () => {
+    let button = document.getElementById("vlanya-video-fullscreen-button");
+    if (button) return button;
+
+    button = document.createElement("button");
+    button.id = "vlanya-video-fullscreen-button";
+    button.className = "vlanya-video-fullscreen-button";
+    button.type = "button";
+    button.textContent = "[]";
+    button.title = "Open video fullscreen";
+    button.setAttribute("aria-label", "Open video fullscreen");
+    button.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      requestVideoFullscreen(window.__vlanyaActiveFullscreenVideo);
+    });
+    document.body.appendChild(button);
+    return button;
+  };
+
+  const hideVideoFullscreenButton = () => {
+    const button = document.getElementById("vlanya-video-fullscreen-button");
+    if (!button) return;
+    button.style.display = "none";
+    window.__vlanyaActiveFullscreenVideo = null;
+  };
+
+  const positionVideoFullscreenButton = (video) => {
+    const button = ensureVideoFullscreenButton();
+    const rect = video.getBoundingClientRect();
+    const left = Math.max(8, Math.min(window.innerWidth - 40, rect.right - 42));
+    const top = Math.max(8, Math.min(window.innerHeight - 40, rect.top + 10));
+    button.style.left = `${left}px`;
+    button.style.top = `${top}px`;
+    button.style.display = "flex";
+    window.__vlanyaActiveFullscreenVideo = video;
+  };
+
   const installVideoFullscreen = () => {
     injectVideoFullscreenStyle();
     markFullscreenVideos();
@@ -194,6 +289,33 @@
         requestVideoFullscreen(video);
       };
       document.addEventListener("dblclick", window.__vlanyaVideoFullscreenClickHandler, true);
+    }
+
+    if (!window.__vlanyaVideoFullscreenMoveHandler) {
+      let hideTimer = null;
+      window.__vlanyaVideoFullscreenMoveHandler = (event) => {
+        const video = findVideoAtPoint(event.clientX, event.clientY);
+        if (video) {
+          if (hideTimer) {
+            window.clearTimeout(hideTimer);
+            hideTimer = null;
+          }
+          positionVideoFullscreenButton(video);
+          return;
+        }
+
+        const button = document.getElementById("vlanya-video-fullscreen-button");
+        if (button && event.target === button) return;
+        if (!hideTimer) {
+          hideTimer = window.setTimeout(() => {
+            hideTimer = null;
+            hideVideoFullscreenButton();
+          }, 450);
+        }
+      };
+      document.addEventListener("mousemove", window.__vlanyaVideoFullscreenMoveHandler, true);
+      window.addEventListener("scroll", hideVideoFullscreenButton, true);
+      window.addEventListener("resize", hideVideoFullscreenButton);
     }
 
     if (window.__vlanyaVideoFullscreenObserver) return;

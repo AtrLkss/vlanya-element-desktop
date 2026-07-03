@@ -13,8 +13,9 @@ Microphone capture is also patched to request browser-side `noiseSuppression`,
 The message composer gets a compact dark accent style with a red focus bar and
 caret inside the Electron wrapper.
 
-Call videos can be opened fullscreen with a double-click, including webcam
-tiles that Element does not normally expose like screen shares.
+Call videos can be opened fullscreen with a double-click or the small `[]`
+overlay button, including webcam tiles that Element does not normally expose
+like screen shares.
 
 ## Run
 
