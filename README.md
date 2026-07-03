@@ -10,6 +10,12 @@ Element Desktop installation.
 Microphone capture is also patched to request browser-side `noiseSuppression`,
 `echoCancellation`, and `autoGainControl` for calls.
 
+The message composer gets a compact dark accent style with a red focus bar and
+caret inside the Electron wrapper.
+
+Call videos can be opened fullscreen with a double-click, including webcam
+tiles that Element does not normally expose like screen shares.
+
 ## Run
 
 ```powershell
