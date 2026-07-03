@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Выбор демонстрации</title>
+    <link rel="stylesheet" href="./picker.css" />
+  </head>
+  <body>
+    <main class="picker">
+      <header>
+        <div>
+          <h1>Что показать?</h1>
+          <p>Выбери экран или окно. На Windows можно передавать системный звук.</p>
+        </div>
+        <button id="cancelButton" class="ghost" type="button">Отмена</button>
+      </header>
+
+      <label id="audioRow" class="audio-row">
+        <input id="shareAudioInput" type="checkbox" checked />
+        <span>Передавать звук Windows</span>
+      </label>
+
+      <section id="sourcesList" class="sources"></section>
+    </main>
+
+    <template id="sourceTemplate">
+      <button class="source" type="button">
+        <img class="thumb" alt="" />
+        <span class="source-title"></span>
+        <span class="source-type"></span>
+      </button>
+    </template>
+
+    <script src="./picker.js"></script>
+  </body>
+</html>

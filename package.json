@@ -1,0 +1,35 @@
+{
+  "name": "vlanya-element-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Vlanya Element desktop wrapper with Windows screen-share audio loopback.",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "check": "node --check src/main.js && node --check src/preload.js && node --check src/picker-preload.js && node --check src/picker.js",
+    "pack": "electron-builder --win portable --x64"
+  },
+  "devDependencies": {
+    "electron": "^39.2.7",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "ru.vlanya.element",
+    "productName": "Vlanya Element",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ]
+    },
+    "portable": {
+      "artifactName": "Vlanya-Element-${version}-portable.exe"
+    }
+  }
+}
