@@ -8,7 +8,10 @@ This is meant to test system-audio screen sharing without modifying the official
 Element Desktop installation.
 
 Microphone capture is also patched to request browser-side `noiseSuppression`,
-`echoCancellation`, and `autoGainControl` for calls.
+`echoCancellation`, and `autoGainControl` for calls. On top of that, microphone
+tracks are routed through a WebAudio voice chain: high-pass filter, low-pass
+filter, light compression, and an adaptive noise gate before WebRTC sees the
+track.
 
 The chat UI customizations live in the Vlanya Element Web build served from the
 server. This desktop wrapper only handles native Windows capture behavior,
