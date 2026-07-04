@@ -3,16 +3,22 @@
     noiseSuppression: true,
     echoCancellation: true,
     autoGainControl: true,
+    channelCount: { ideal: 1 },
   };
 
-  const WORKLET_NAME = "vlanya-noise-gate";
+  const NOISE_MODE_KEY = "vlanya.noiseSuppressionMode";
+  const DEFAULT_NOISE_MODE = "extreme";
+  const VALID_NOISE_MODES = new Set(["normal", "extreme"]);
+  const WORKLET_NAME = "vlanya-voice-gate";
   const WORKLET_CODE = `
-class VlanyaNoiseGate extends AudioWorkletProcessor {
-  constructor() {
+class VlanyaVoiceGate extends AudioWorkletProcessor {
+  constructor(options) {
     super();
+    this.mode = options.processorOptions?.mode === "normal" ? "normal" : "extreme";
     this.gain = 1;
-    this.noiseFloor = 0.012;
+    this.noiseFloor = this.mode === "extreme" ? 0.009 : 0.012;
     this.hold = 0;
+    this.closedFrames = 0;
   }
 
   process(inputs, outputs) {
@@ -21,46 +27,64 @@ class VlanyaNoiseGate extends AudioWorkletProcessor {
     if (!input || !input.length || !output || !output.length) return true;
 
     let sum = 0;
+    let peak = 0;
     let count = 0;
     for (const channel of input) {
       for (let i = 0; i < channel.length; i += 1) {
-        sum += channel[i] * channel[i];
+        const sample = channel[i];
+        const abs = Math.abs(sample);
+        sum += sample * sample;
+        if (abs > peak) peak = abs;
         count += 1;
       }
     }
 
     const rms = count ? Math.sqrt(sum / count) : 0;
-    const openThreshold = Math.max(0.018, this.noiseFloor * 3.0);
-    const closeThreshold = Math.max(0.012, this.noiseFloor * 1.8);
-    const speaking = rms > openThreshold;
+    const extreme = this.mode === "extreme";
+    const openThreshold = Math.max(extreme ? 0.032 : 0.018, this.noiseFloor * (extreme ? 5.2 : 3.0));
+    const closeThreshold = Math.max(extreme ? 0.021 : 0.012, this.noiseFloor * (extreme ? 3.3 : 1.8));
+    const peakBoost = peak > (extreme ? 0.09 : 0.06) && rms > closeThreshold;
+    const speaking = rms > openThreshold || peakBoost;
 
     if (speaking) {
-      this.hold = 18;
+      this.hold = extreme ? 8 : 18;
+      this.closedFrames = 0;
     } else if (this.hold > 0) {
       this.hold -= 1;
     } else {
-      this.noiseFloor = (this.noiseFloor * 0.98) + (Math.max(0.002, rms) * 0.02);
+      this.closedFrames += 1;
+      this.noiseFloor = (this.noiseFloor * 0.985) + (Math.max(0.0015, rms) * 0.015);
     }
 
-    let targetGain = 0.08;
+    let targetGain = extreme ? 0.0 : 0.08;
     if (speaking || this.hold > 0) {
       targetGain = 1;
     } else if (rms > closeThreshold) {
-      targetGain = 0.32;
+      targetGain = extreme ? 0.12 : 0.32;
     }
 
-    const smoothing = targetGain > this.gain ? 0.22 : 0.055;
+    if (extreme && this.closedFrames > 16) {
+      targetGain = 0;
+    }
+
+    const smoothing = targetGain > this.gain ? (extreme ? 0.35 : 0.22) : (extreme ? 0.12 : 0.055);
     this.gain += (targetGain - this.gain) * smoothing;
+
+    if (extreme && this.gain < 0.006) {
+      this.gain = 0;
+    }
 
     for (let channelIndex = 0; channelIndex < output.length; channelIndex += 1) {
       const source = input[Math.min(channelIndex, input.length - 1)];
       const destination = output[channelIndex];
-      if (!source) {
+      if (!source || this.gain === 0) {
         destination.fill(0);
         continue;
       }
+
       for (let i = 0; i < destination.length; i += 1) {
-        destination[i] = source[i] * this.gain;
+        const sample = source[i] * this.gain;
+        destination[i] = Math.max(-0.98, Math.min(0.98, sample));
       }
     }
 
@@ -68,10 +92,45 @@ class VlanyaNoiseGate extends AudioWorkletProcessor {
   }
 }
 
-registerProcessor("${WORKLET_NAME}", VlanyaNoiseGate);
+registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
 `;
 
   const processingContexts = new Set();
+
+  const getNoiseMode = () => {
+    try {
+      const storedMode = window.localStorage?.getItem(NOISE_MODE_KEY);
+      return VALID_NOISE_MODES.has(storedMode) ? storedMode : DEFAULT_NOISE_MODE;
+    } catch (_) {
+      return DEFAULT_NOISE_MODE;
+    }
+  };
+
+  const setNoiseMode = (mode) => {
+    const nextMode = VALID_NOISE_MODES.has(mode) ? mode : DEFAULT_NOISE_MODE;
+    try {
+      window.localStorage?.setItem(NOISE_MODE_KEY, nextMode);
+    } catch (_) {
+      // Ignore storage failures; the current page can still use the default mode.
+    }
+    console.info(`[Vlanya Element] microphone noise suppression mode set to "${nextMode}". Rejoin the call to recapture the microphone.`);
+    return nextMode;
+  };
+
+  const exposeNoiseControls = () => {
+    if (window.vlanyaNoiseSuppression) return;
+    Object.defineProperty(window, "vlanyaNoiseSuppression", {
+      value: {
+        getMode: getNoiseMode,
+        setMode: setNoiseMode,
+        setExtreme: (enabled = true) => setNoiseMode(enabled ? "extreme" : "normal"),
+        isExtreme: () => getNoiseMode() === "extreme",
+      },
+      configurable: false,
+      enumerable: false,
+      writable: false,
+    });
+  };
 
   const withAudioProcessing = (constraints = {}) => {
     if (!constraints || typeof constraints !== "object") return constraints;
@@ -91,7 +150,7 @@ registerProcessor("${WORKLET_NAME}", VlanyaNoiseGate);
     };
   };
 
-  const makeWorkletNode = async (context) => {
+  const makeWorkletNode = async (context, mode) => {
     if (!context.audioWorklet) return null;
 
     const blob = new Blob([WORKLET_CODE], { type: "text/javascript" });
@@ -102,62 +161,116 @@ registerProcessor("${WORKLET_NAME}", VlanyaNoiseGate);
         numberOfInputs: 1,
         numberOfOutputs: 1,
         outputChannelCount: [1],
+        processorOptions: { mode },
       });
     } finally {
       URL.revokeObjectURL(url);
     }
   };
 
-  const makeScriptProcessorGate = (context) => {
+  const makeScriptProcessorGate = (context, mode) => {
     const node = context.createScriptProcessor(1024, 1, 1);
+    const extreme = mode === "extreme";
     let gain = 1;
-    let noiseFloor = 0.012;
+    let noiseFloor = extreme ? 0.009 : 0.012;
     let hold = 0;
+    let closedFrames = 0;
 
     node.onaudioprocess = (event) => {
       const input = event.inputBuffer.getChannelData(0);
       const output = event.outputBuffer.getChannelData(0);
       let sum = 0;
+      let peak = 0;
 
       for (let i = 0; i < input.length; i += 1) {
-        sum += input[i] * input[i];
+        const sample = input[i];
+        const abs = Math.abs(sample);
+        sum += sample * sample;
+        if (abs > peak) peak = abs;
       }
 
       const rms = Math.sqrt(sum / input.length);
-      const openThreshold = Math.max(0.018, noiseFloor * 3.0);
-      const closeThreshold = Math.max(0.012, noiseFloor * 1.8);
-      const speaking = rms > openThreshold;
+      const openThreshold = Math.max(extreme ? 0.032 : 0.018, noiseFloor * (extreme ? 5.2 : 3.0));
+      const closeThreshold = Math.max(extreme ? 0.021 : 0.012, noiseFloor * (extreme ? 3.3 : 1.8));
+      const peakBoost = peak > (extreme ? 0.09 : 0.06) && rms > closeThreshold;
+      const speaking = rms > openThreshold || peakBoost;
 
       if (speaking) {
-        hold = 18;
+        hold = extreme ? 8 : 18;
+        closedFrames = 0;
       } else if (hold > 0) {
         hold -= 1;
       } else {
-        noiseFloor = (noiseFloor * 0.98) + (Math.max(0.002, rms) * 0.02);
+        closedFrames += 1;
+        noiseFloor = (noiseFloor * 0.985) + (Math.max(0.0015, rms) * 0.015);
       }
 
-      let targetGain = 0.08;
+      let targetGain = extreme ? 0.0 : 0.08;
       if (speaking || hold > 0) {
         targetGain = 1;
       } else if (rms > closeThreshold) {
-        targetGain = 0.32;
+        targetGain = extreme ? 0.12 : 0.32;
+      }
+      if (extreme && closedFrames > 16) targetGain = 0;
+
+      const smoothing = targetGain > gain ? (extreme ? 0.35 : 0.22) : (extreme ? 0.12 : 0.055);
+      gain += (targetGain - gain) * smoothing;
+      if (extreme && gain < 0.006) gain = 0;
+
+      if (gain === 0) {
+        output.fill(0);
+        return;
       }
 
-      const smoothing = targetGain > gain ? 0.22 : 0.055;
-      gain += (targetGain - gain) * smoothing;
-
       for (let i = 0; i < input.length; i += 1) {
-        output[i] = input[i] * gain;
+        const sample = input[i] * gain;
+        output[i] = Math.max(-0.98, Math.min(0.98, sample));
       }
     };
 
     return node;
   };
 
+  const createVoiceOnlyFilters = (context, mode) => {
+    const extreme = mode === "extreme";
+    const highPass = context.createBiquadFilter();
+    const lowPass = context.createBiquadFilter();
+    const presence = context.createBiquadFilter();
+    const deMud = context.createBiquadFilter();
+    const compressor = context.createDynamicsCompressor();
+
+    highPass.type = "highpass";
+    highPass.frequency.value = extreme ? 165 : 95;
+    highPass.Q.value = extreme ? 0.95 : 0.7;
+
+    lowPass.type = "lowpass";
+    lowPass.frequency.value = extreme ? 4300 : 9800;
+    lowPass.Q.value = extreme ? 0.65 : 0.45;
+
+    presence.type = "peaking";
+    presence.frequency.value = 2550;
+    presence.Q.value = 1.05;
+    presence.gain.value = extreme ? 4.5 : 1.5;
+
+    deMud.type = "peaking";
+    deMud.frequency.value = 320;
+    deMud.Q.value = 1.1;
+    deMud.gain.value = extreme ? -5.5 : -1.5;
+
+    compressor.threshold.value = extreme ? -34 : -28;
+    compressor.knee.value = extreme ? 9 : 18;
+    compressor.ratio.value = extreme ? 5.5 : 2.6;
+    compressor.attack.value = extreme ? 0.002 : 0.004;
+    compressor.release.value = extreme ? 0.09 : 0.16;
+
+    return { highPass, lowPass, presence, deMud, compressor };
+  };
+
   const processMicrophoneTrack = async (track) => {
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
     if (!AudioContextClass || track.__vlanyaNoiseSuppressed) return track;
 
+    const mode = getNoiseMode();
     const context = new AudioContextClass({
       latencyHint: "interactive",
     });
@@ -169,28 +282,14 @@ registerProcessor("${WORKLET_NAME}", VlanyaNoiseGate);
 
       const inputStream = new MediaStream([track]);
       const source = context.createMediaStreamSource(inputStream);
-      const highPass = context.createBiquadFilter();
-      const lowPass = context.createBiquadFilter();
-      const compressor = context.createDynamicsCompressor();
+      const { highPass, lowPass, presence, deMud, compressor } = createVoiceOnlyFilters(context, mode);
       const destination = context.createMediaStreamDestination();
-      const gate = (await makeWorkletNode(context)) || makeScriptProcessorGate(context);
-
-      highPass.type = "highpass";
-      highPass.frequency.value = 95;
-      highPass.Q.value = 0.7;
-
-      lowPass.type = "lowpass";
-      lowPass.frequency.value = 9800;
-      lowPass.Q.value = 0.45;
-
-      compressor.threshold.value = -28;
-      compressor.knee.value = 18;
-      compressor.ratio.value = 2.6;
-      compressor.attack.value = 0.004;
-      compressor.release.value = 0.16;
+      const gate = (await makeWorkletNode(context, mode)) || makeScriptProcessorGate(context, mode);
 
       source.connect(highPass);
-      highPass.connect(lowPass);
+      highPass.connect(deMud);
+      deMud.connect(presence);
+      presence.connect(lowPass);
       lowPass.connect(compressor);
       compressor.connect(gate);
       gate.connect(destination);
@@ -199,12 +298,18 @@ registerProcessor("${WORKLET_NAME}", VlanyaNoiseGate);
       if (!processedTrack) throw new Error("Processed microphone track was not created");
 
       Object.defineProperty(processedTrack, "__vlanyaNoiseSuppressed", { value: true });
+      Object.defineProperty(processedTrack, "__vlanyaNoiseMode", { value: mode });
       processingContexts.add(context);
 
+      let cleaned = false;
       const cleanup = () => {
+        if (cleaned) return;
+        cleaned = true;
         processingContexts.delete(context);
         source.disconnect();
         highPass.disconnect();
+        deMud.disconnect();
+        presence.disconnect();
         lowPass.disconnect();
         compressor.disconnect();
         gate.disconnect();
@@ -227,7 +332,7 @@ registerProcessor("${WORKLET_NAME}", VlanyaNoiseGate);
         { once: true },
       );
 
-      console.info("[Vlanya Element] microphone track is processed by WebAudio noise suppression.");
+      console.info(`[Vlanya Element] microphone track is processed by "${mode}" voice-only noise suppression.`);
       return processedTrack;
     } catch (error) {
       console.warn("[Vlanya Element] WebAudio noise suppression failed, using original microphone track.", error);
@@ -241,22 +346,15 @@ registerProcessor("${WORKLET_NAME}", VlanyaNoiseGate);
     if (!audioTracks.length) return stream;
 
     const processedAudioTracks = await Promise.all(audioTracks.map(processMicrophoneTrack));
-    const nextStream = new MediaStream([
+    return new MediaStream([
       ...stream.getVideoTracks(),
       ...processedAudioTracks,
     ]);
-
-    for (const track of stream.getTracks()) {
-      if (!audioTracks.includes(track)) continue;
-      if (!processedAudioTracks.includes(track) && track.readyState !== "ended") {
-        track.enabled = true;
-      }
-    }
-
-    return nextStream;
   };
 
   const patch = () => {
+    exposeNoiseControls();
+
     const mediaDevices = navigator.mediaDevices;
     if (!mediaDevices || mediaDevices.__vlanyaPatched) return;
 
@@ -292,7 +390,7 @@ registerProcessor("${WORKLET_NAME}", VlanyaNoiseGate);
     }
 
     Object.defineProperty(mediaDevices, "__vlanyaPatched", { value: true });
-    console.info("[Vlanya Element] media capture patched for system audio and WebAudio microphone noise suppression.");
+    console.info(`[Vlanya Element] media capture patched for system audio and "${getNoiseMode()}" voice-only microphone suppression.`);
   };
 
   patch();

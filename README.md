@@ -13,6 +13,12 @@ tracks are routed through a WebAudio voice chain: high-pass filter, low-pass
 filter, light compression, and an adaptive noise gate before WebRTC sees the
 track.
 
+The default microphone mode is `extreme`: it narrows capture to the speech
+range, boosts voice presence, cuts mud, and closes the gate aggressively when
+speech is not detected. For testing, the page exposes
+`window.vlanyaNoiseSuppression.setExtreme(true | false)`. Rejoin the call after
+changing the mode so Element captures the microphone again.
+
 The chat UI customizations live in the Vlanya Element Web build served from the
 server. This desktop wrapper only handles native Windows capture behavior,
 tray/background behavior, and media constraints.
