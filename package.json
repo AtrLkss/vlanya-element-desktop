@@ -1,6 +1,6 @@
 {
   "name": "vlanya-element-desktop",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "private": true,
   "description": "Vlanya Element desktop wrapper with Windows screen-share audio loopback.",
   "main": "src/main.js",
@@ -21,6 +21,7 @@
     },
     "files": [
       "src/**/*",
+      "node_modules/deepfilternet3-noise-filter/**/*",
       "package.json"
     ],
     "win": {
@@ -31,5 +32,8 @@
     "portable": {
       "artifactName": "Vlanya-Element-${version}-portable.exe"
     }
+  },
+  "dependencies": {
+    "deepfilternet3-noise-filter": "^1.3.0"
   }
 }

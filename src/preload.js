@@ -7,8 +7,11 @@
   };
 
   const NOISE_MODE_KEY = "vlanya.noiseSuppressionMode";
-  const DEFAULT_NOISE_MODE = "extreme";
-  const VALID_NOISE_MODES = new Set(["normal", "extreme"]);
+  const DEFAULT_NOISE_MODE = "deepfilter";
+  const VALID_NOISE_MODES = new Set(["normal", "extreme", "deepfilter"]);
+  const DEEPFILTER_SUPPRESSION_LEVEL = 100;
+  const DEEPFILTER_PACKAGE = "deepfilternet3-noise-filter";
+  const DEEPFILTER_ASSET_BASE = "https://cdn.mezon.ai/AI/models/datas/noise_suppression/deepfilternet3";
   const WORKLET_NAME = "vlanya-voice-gate";
   const WORKLET_CODE = `
 class VlanyaVoiceGate extends AudioWorkletProcessor {
@@ -96,6 +99,118 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
 `;
 
   const processingContexts = new Set();
+  let deepFilterModulePromise = null;
+
+  const importDeepFilterModule = () => {
+    if (deepFilterModulePromise) return deepFilterModulePromise;
+
+    deepFilterModulePromise = (async () => {
+      if (typeof require === "function") {
+        try {
+          const path = require("node:path");
+          const { pathToFileURL } = require("node:url");
+          const commonJsEntry = require.resolve(DEEPFILTER_PACKAGE);
+          const esmEntry = path.join(path.dirname(commonJsEntry), "index.esm.js");
+          return import(pathToFileURL(esmEntry).href);
+        } catch (error) {
+          console.warn("[Vlanya Element] DeepFilterNet local module lookup failed, trying browser import.", error);
+        }
+      }
+
+      return import(DEEPFILTER_PACKAGE);
+    })();
+
+    return deepFilterModulePromise;
+  };
+
+  const fetchDeepFilterAssetWithNode = (url, redirectCount = 0) =>
+    new Promise((resolve, reject) => {
+      if (typeof require !== "function") {
+        reject(new Error("Node asset loader is not available"));
+        return;
+      }
+
+      const http = require("node:http");
+      const https = require("node:https");
+      const { Buffer } = require("node:buffer");
+      const client = url.startsWith("http:") ? http : https;
+      const request = client.get(
+        url,
+        {
+          headers: {
+            "User-Agent": "Vlanya-Element-DeepFilterNet/0.1",
+          },
+        },
+        (response) => {
+          const status = response.statusCode || 0;
+          const redirectUrl = response.headers.location;
+          if (status >= 300 && status < 400 && redirectUrl) {
+            response.resume();
+            if (redirectCount >= 5) {
+              reject(new Error(`Too many redirects while loading ${url}`));
+              return;
+            }
+            const nextUrl = new URL(redirectUrl, url).toString();
+            fetchDeepFilterAssetWithNode(nextUrl, redirectCount + 1).then(resolve, reject);
+            return;
+          }
+
+          if (status < 200 || status >= 300) {
+            response.resume();
+            reject(new Error(`DeepFilterNet asset request failed with HTTP ${status}`));
+            return;
+          }
+
+          const chunks = [];
+          response.on("data", (chunk) => chunks.push(chunk));
+          response.on("end", () => {
+            const buffer = Buffer.concat(chunks);
+            resolve(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
+          });
+        },
+      );
+
+      request.setTimeout(45000, () => {
+        request.destroy(new Error(`Timed out loading ${url}`));
+      });
+      request.on("error", reject);
+    });
+
+  const createDeepFilterAssetLoader = () => {
+    if (typeof require !== "function") return null;
+
+    return {
+      getAssetUrls: () => ({
+        wasm: `${DEEPFILTER_ASSET_BASE}/v3/pkg/df_bg.wasm`,
+        model: `${DEEPFILTER_ASSET_BASE}/v3/models/DeepFilterNet3_onnx.tar.gz`,
+      }),
+      fetchAsset: fetchDeepFilterAssetWithNode,
+    };
+  };
+
+  const makeDeepFilterNode = async (context) => {
+    const module = await importDeepFilterModule();
+    const Core = module?.DeepFilterNet3Core;
+    if (typeof Core !== "function") {
+      throw new Error("DeepFilterNet3Core export was not found");
+    }
+
+    const processor = new Core({
+      sampleRate: context.sampleRate || 48000,
+      noiseReductionLevel: DEEPFILTER_SUPPRESSION_LEVEL,
+    });
+    const nodeAssetLoader = createDeepFilterAssetLoader();
+    if (nodeAssetLoader) {
+      processor.assetLoader = nodeAssetLoader;
+    }
+
+    await processor.initialize();
+    const node = await processor.createAudioWorkletNode(context);
+    processor.setNoiseSuppressionEnabled?.(true);
+    processor.setSuppressionLevel?.(DEEPFILTER_SUPPRESSION_LEVEL);
+
+    return { node, processor };
+  };
 
   const getNoiseMode = () => {
     try {
@@ -125,6 +240,8 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
         setMode: setNoiseMode,
         setExtreme: (enabled = true) => setNoiseMode(enabled ? "extreme" : "normal"),
         isExtreme: () => getNoiseMode() === "extreme",
+        setDeepFilterNet: (enabled = true) => setNoiseMode(enabled ? "deepfilter" : "extreme"),
+        isDeepFilterNet: () => getNoiseMode() === "deepfilter",
       },
       configurable: false,
       enumerable: false,
@@ -266,14 +383,28 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
     return { highPass, lowPass, presence, deMud, compressor };
   };
 
-  const processMicrophoneTrack = async (track) => {
+  const makeAudioContext = () => {
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-    if (!AudioContextClass || track.__vlanyaNoiseSuppressed) return track;
+    if (!AudioContextClass) return null;
+
+    try {
+      return new AudioContextClass({
+        latencyHint: "interactive",
+        sampleRate: 48000,
+      });
+    } catch (_) {
+      return new AudioContextClass({
+        latencyHint: "interactive",
+      });
+    }
+  };
+
+  const processMicrophoneTrack = async (track) => {
+    if (track.__vlanyaNoiseSuppressed) return track;
 
     const mode = getNoiseMode();
-    const context = new AudioContextClass({
-      latencyHint: "interactive",
-    });
+    const context = makeAudioContext();
+    if (!context) return track;
 
     try {
       if (context.state === "suspended") {
@@ -282,11 +413,28 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
 
       const inputStream = new MediaStream([track]);
       const source = context.createMediaStreamSource(inputStream);
-      const { highPass, lowPass, presence, deMud, compressor } = createVoiceOnlyFilters(context, mode);
       const destination = context.createMediaStreamDestination();
-      const gate = (await makeWorkletNode(context, mode)) || makeScriptProcessorGate(context, mode);
+      const postFilterMode = mode === "deepfilter" ? "extreme" : mode;
+      const { highPass, lowPass, presence, deMud, compressor } = createVoiceOnlyFilters(context, postFilterMode);
+      const gate = (await makeWorkletNode(context, postFilterMode)) || makeScriptProcessorGate(context, postFilterMode);
+      let chainInput = source;
+      let deepFilterNode = null;
+      let deepFilterProcessor = null;
 
-      source.connect(highPass);
+      if (mode === "deepfilter") {
+        try {
+          const deepFilter = await makeDeepFilterNode(context);
+          deepFilterNode = deepFilter.node;
+          deepFilterProcessor = deepFilter.processor;
+          source.connect(deepFilterNode);
+          chainInput = deepFilterNode;
+          console.info("[Vlanya Element] DeepFilterNet microphone processor is active.");
+        } catch (error) {
+          console.warn("[Vlanya Element] DeepFilterNet failed, falling back to local extreme suppression.", error);
+        }
+      }
+
+      chainInput.connect(highPass);
       highPass.connect(deMud);
       deMud.connect(presence);
       presence.connect(lowPass);
@@ -307,6 +455,8 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
         cleaned = true;
         processingContexts.delete(context);
         source.disconnect();
+        deepFilterNode?.disconnect();
+        deepFilterProcessor?.destroy?.();
         highPass.disconnect();
         deMud.disconnect();
         presence.disconnect();
@@ -332,7 +482,7 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
         { once: true },
       );
 
-      console.info(`[Vlanya Element] microphone track is processed by "${mode}" voice-only noise suppression.`);
+      console.info(`[Vlanya Element] microphone track is processed by "${mode}" microphone noise suppression.`);
       return processedTrack;
     } catch (error) {
       console.warn("[Vlanya Element] WebAudio noise suppression failed, using original microphone track.", error);
@@ -390,7 +540,7 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
     }
 
     Object.defineProperty(mediaDevices, "__vlanyaPatched", { value: true });
-    console.info(`[Vlanya Element] media capture patched for system audio and "${getNoiseMode()}" voice-only microphone suppression.`);
+    console.info(`[Vlanya Element] media capture patched for system audio and "${getNoiseMode()}" microphone suppression.`);
   };
 
   patch();
