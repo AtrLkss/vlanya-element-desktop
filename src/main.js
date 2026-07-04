@@ -1,4 +1,5 @@
 const path = require("node:path");
+const fs = require("node:fs");
 const {
   app,
   BrowserWindow,
@@ -9,10 +10,23 @@ const {
   shell,
   session,
   Tray,
+  webFrameMain,
 } = require("electron");
 
 const CHAT_URL = "https://chat.vlanya.ru";
 const PRELOAD_PATH = path.join(__dirname, "preload.js");
+const FRAME_AUDIO_PATCH_PATH = path.join(__dirname, "frame-audio-patch.js");
+const DEEPFILTER_BROWSER_BUNDLE_PATH = path.join(
+  __dirname,
+  "..",
+  "node_modules",
+  "deepfilternet3-noise-filter",
+  "dist",
+  "index.esm.js",
+);
+const DEEPFILTER_ASSET_URL_FILTER = {
+  urls: ["https://cdn.mezon.ai/AI/models/datas/noise_suppression/deepfilternet3/*"],
+};
 const ALLOWED_HOSTS = new Set([
   "chat.vlanya.ru",
   "call.vlanya.ru",
@@ -27,6 +41,8 @@ let isQuitting = false;
 let currentPickerResolve = null;
 let currentSources = [];
 const configuredWebContents = new WeakSet();
+let frameAudioPatchSource = null;
+let deepFilterBrowserBundleSource = null;
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
@@ -41,6 +57,63 @@ function isAllowedUrl(value) {
     return parsed.protocol === "https:" && ALLOWED_HOSTS.has(parsed.hostname);
   } catch (_) {
     return false;
+  }
+}
+
+function isAllowedFrameUrl(value) {
+  if (!value) return false;
+  if (value === "about:blank" || value.startsWith("about:srcdoc")) return true;
+  return isAllowedUrl(value);
+}
+
+function getFrameAudioPatchSource() {
+  if (!frameAudioPatchSource) {
+    frameAudioPatchSource = fs.readFileSync(FRAME_AUDIO_PATCH_PATH, "utf8");
+  }
+  return `${getDeepFilterBrowserBundleSource()}\n${frameAudioPatchSource}\n//# sourceURL=vlanya-frame-audio-patch.js`;
+}
+
+function getDeepFilterBrowserBundleSource() {
+  if (!deepFilterBrowserBundleSource) {
+    let source = fs.readFileSync(DEEPFILTER_BROWSER_BUNDLE_PATH, "utf8");
+    source = source.replace(
+      /export\s+\{\s*AssetLoader,\s*DeepFilterNet3Core,\s*DeepFilterNoiseFilter,\s*DeepFilterNoiseFilterProcessor,\s*getAssetLoader\s*\};?\s*$/m,
+      [
+        "globalThis.__vlanyaDeepFilterNet3Core = DeepFilterNet3Core;",
+        "globalThis.__vlanyaDeepFilterNetAssetLoader = AssetLoader;",
+        "globalThis.__vlanyaDeepFilterNoiseFilter = DeepFilterNoiseFilter;",
+        "globalThis.__vlanyaDeepFilterNoiseFilterProcessor = DeepFilterNoiseFilterProcessor;",
+        "globalThis.__vlanyaDeepFilterGetAssetLoader = getAssetLoader;",
+      ].join("\n"),
+    );
+    deepFilterBrowserBundleSource = [
+      "(function installVlanyaDeepFilterNetBundle() {",
+      "if (globalThis.__vlanyaDeepFilterNet3Core) return;",
+      source,
+      "})();",
+      "//# sourceURL=vlanya-deepfilter-browser-bundle.js",
+    ].join("\n");
+  }
+  return deepFilterBrowserBundleSource;
+}
+
+function injectFrameAudioPatch(frame) {
+  if (!frame || frame.detached || frame.isDestroyed?.()) return;
+  if (!isAllowedFrameUrl(frame.url)) return;
+
+  frame.executeJavaScript(getFrameAudioPatchSource(), false).catch((error) => {
+    console.warn("frame audio patch injection failed:", frame.url, error?.message || error);
+  });
+}
+
+function injectAllFrameAudioPatches(contents) {
+  if (!contents || contents.isDestroyed?.()) return;
+  try {
+    for (const frame of contents.mainFrame.framesInSubtree) {
+      injectFrameAudioPatch(frame);
+    }
+  } catch (error) {
+    console.warn("failed to enumerate frames for audio patch:", error?.message || error);
   }
 }
 
@@ -89,9 +162,46 @@ function configureAppWebContents(contents) {
     event.preventDefault();
     shell.openExternal(url);
   });
+
+  contents.on("frame-created", (_event, details) => {
+    if (details?.frame) {
+      setTimeout(() => injectFrameAudioPatch(details.frame), 0);
+      setTimeout(() => injectFrameAudioPatch(details.frame), 250);
+    }
+  });
+
+  contents.on("did-frame-finish-load", (_event, _isMainFrame, frameProcessId, frameRoutingId) => {
+    const frame = webFrameMain.fromId(frameProcessId, frameRoutingId);
+    if (frame) injectFrameAudioPatch(frame);
+  });
+
+  contents.on("did-frame-navigate", (_event, _url, _httpResponseCode, _httpStatusText, _isMainFrame, frameProcessId, frameRoutingId) => {
+    const frame = webFrameMain.fromId(frameProcessId, frameRoutingId);
+    if (frame) setTimeout(() => injectFrameAudioPatch(frame), 0);
+  });
+
+  contents.on("did-finish-load", () => {
+    injectAllFrameAudioPatches(contents);
+  });
+
+  contents.on("did-attach-webview", (_event, guestContents) => {
+    configureAppWebContents(guestContents);
+    injectAllFrameAudioPatches(guestContents);
+  });
 }
 
 function configureSession(ses) {
+  if (!ses.__vlanyaDeepFilterCorsPatched) {
+    ses.webRequest.onHeadersReceived(DEEPFILTER_ASSET_URL_FILTER, (details, callback) => {
+      const responseHeaders = { ...(details.responseHeaders || {}) };
+      responseHeaders["Access-Control-Allow-Origin"] = ["*"];
+      responseHeaders["Access-Control-Allow-Methods"] = ["GET, OPTIONS"];
+      responseHeaders["Access-Control-Allow-Headers"] = ["*"];
+      callback({ responseHeaders });
+    });
+    Object.defineProperty(ses, "__vlanyaDeepFilterCorsPatched", { value: true });
+  }
+
   ses.setPermissionCheckHandler((_webContents, permission, requestingOrigin, details) => {
     if (!isAllowedUrl(requestingOrigin) && !isAllowedUrl(getOriginFromDetails(details))) return false;
     return [
