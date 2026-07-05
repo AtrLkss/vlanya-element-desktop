@@ -171,6 +171,19 @@ function isWindowAudioFrameAllowed(frame) {
   return isAllowedFrameUrl(frame.url) && isElementCallFrameUrl(frame.url);
 }
 
+function isWindowAudioIpcFrameAllowed(frame) {
+  if (!frame || frame.detached || frame.isDestroyed?.()) return false;
+  if (!isAllowedFrameUrl(frame.url)) return false;
+  if (isElementCallFrameUrl(frame.url)) return true;
+
+  try {
+    const parsed = new URL(frame.url);
+    return parsed.hostname === "chat.vlanya.ru" || parsed.hostname === "vlanya.ru";
+  } catch (_) {
+    return false;
+  }
+}
+
 function stopWindowAudioCapture(token) {
   const capture = activeWindowAudioCaptures.get(token);
   if (!capture) return;
@@ -519,7 +532,7 @@ ipcMain.handle("picker:cancel", () => {
 
 ipcMain.handle("vlanya-window-audio:start", (event) => {
   const frame = event.senderFrame;
-  if (!isWindowAudioFrameAllowed(frame)) {
+  if (!isWindowAudioIpcFrameAllowed(frame)) {
     return { ok: false, error: "frame-not-allowed" };
   }
 
@@ -559,7 +572,7 @@ ipcMain.handle("vlanya-window-audio:start", (event) => {
 
   child.stdout.on("data", (chunk) => {
     if (!activeWindowAudioCaptures.has(token)) return;
-    if (!isWindowAudioFrameAllowed(frame)) {
+    if (!isWindowAudioIpcFrameAllowed(frame)) {
       stopWindowAudioCapture(token);
       return;
     }
@@ -613,7 +626,7 @@ ipcMain.handle("vlanya-window-audio:start", (event) => {
 });
 
 ipcMain.handle("vlanya-window-audio:stop", (event, token) => {
-  if (!isWindowAudioFrameAllowed(event.senderFrame)) return false;
+  if (!isWindowAudioIpcFrameAllowed(event.senderFrame)) return false;
   stopWindowAudioCapture(token);
   return true;
 });
