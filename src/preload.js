@@ -9,7 +9,9 @@
   const NOISE_MODE_KEY = "vlanya.noiseSuppressionMode";
   const DEFAULT_NOISE_MODE = "deepfilter";
   const VALID_NOISE_MODES = new Set(["normal", "extreme", "deepfilter"]);
-  const DEEPFILTER_SUPPRESSION_LEVEL = 65;
+  const DEEPFILTER_SUPPRESSION_LEVEL = 55;
+  const DEEPFILTER_WET_GAIN = 0.92;
+  const DEEPFILTER_DRY_SAFETY_GAIN = 0.14;
   const DEEPFILTER_PACKAGE = "deepfilternet3-noise-filter";
   const DEEPFILTER_ASSET_BASE = "https://cdn.mezon.ai/AI/models/datas/noise_suppression/deepfilternet3";
   const WORKLET_NAME = "vlanya-voice-gate";
@@ -560,6 +562,53 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
     return { node, processor };
   };
 
+  const connectDeepFilterVoiceMix = (context, source, deepFilterNode, destination) => {
+    const wetGain = context.createGain();
+    const dryHighPass = context.createBiquadFilter();
+    const dryLowPass = context.createBiquadFilter();
+    const dryGain = context.createGain();
+    const limiter = context.createDynamicsCompressor();
+
+    wetGain.gain.value = DEEPFILTER_WET_GAIN;
+
+    dryHighPass.type = "highpass";
+    dryHighPass.frequency.value = 120;
+    dryHighPass.Q.value = 0.7;
+
+    dryLowPass.type = "lowpass";
+    dryLowPass.frequency.value = 4300;
+    dryLowPass.Q.value = 0.55;
+
+    dryGain.gain.value = DEEPFILTER_DRY_SAFETY_GAIN;
+
+    limiter.threshold.value = -6;
+    limiter.knee.value = 4;
+    limiter.ratio.value = 6;
+    limiter.attack.value = 0.002;
+    limiter.release.value = 0.08;
+
+    source.connect(deepFilterNode);
+    deepFilterNode.connect(wetGain);
+    wetGain.connect(limiter);
+
+    source.connect(dryHighPass);
+    dryHighPass.connect(dryLowPass);
+    dryLowPass.connect(dryGain);
+    dryGain.connect(limiter);
+
+    limiter.connect(destination);
+
+    return () => {
+      for (const node of [source, deepFilterNode, wetGain, dryHighPass, dryLowPass, dryGain, limiter]) {
+        try {
+          node.disconnect();
+        } catch (_) {
+          // Ignore disconnect races when tracks end while the call is closing.
+        }
+      }
+    };
+  };
+
   const getNoiseMode = () => {
     try {
       const storedMode = window.localStorage?.getItem(NOISE_MODE_KEY);
@@ -843,10 +892,9 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
       const deepFilter = await makeDeepFilterNode(context);
       const deepFilterNode = deepFilter.node;
       const deepFilterProcessor = deepFilter.processor;
+      const disconnectVoiceMix = connectDeepFilterVoiceMix(context, source, deepFilterNode, destination);
 
-      source.connect(deepFilterNode);
-      deepFilterNode.connect(destination);
-      console.info("[Vlanya Element] DeepFilterNet-only microphone processor is active.");
+      console.info("[Vlanya Element] DeepFilterNet microphone processor is active with dry voice safety mix.");
 
       const processedTrack = destination.stream.getAudioTracks()[0];
       if (!processedTrack) throw new Error("DeepFilterNet microphone track was not created");
@@ -862,8 +910,7 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
         if (cleaned) return;
         cleaned = true;
         processingContexts.delete(context);
-        source.disconnect();
-        deepFilterNode.disconnect();
+        disconnectVoiceMix();
         deepFilterProcessor?.destroy?.();
         context.close().catch(() => undefined);
       };
@@ -884,7 +931,7 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
         { once: true },
       );
 
-      console.info("[Vlanya Element] microphone track is processed by DeepFilterNet only.");
+      console.info("[Vlanya Element] microphone track is processed by DeepFilterNet with dry voice safety mix.");
       updateAudioRouteIndicator("processed", "DEEPFILTER MIC READY", formatTrackInfo(processedTrack));
       return processedTrack;
     } catch (error) {
