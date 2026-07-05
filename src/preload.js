@@ -236,7 +236,7 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
   const relayedAudioRoutes = new Map();
   let rnnoiseModulePromise = null;
   let rnnoiseInstancePromise = null;
-  let audioRouteIndicatorVisible = false;
+  let audioRouteIndicatorVisible = IS_ELEMENT_CALL_FRAME;
 
   const createAudioRouteSnapshot = () => ({
     type: AUDIO_ROUTE_RELAY_TYPE,
@@ -301,6 +301,7 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
         stats: data.stats || {},
         sentAt: data.sentAt || Date.now(),
       });
+      audioRouteIndicatorVisible = true;
       renderAudioRouteIndicator();
     });
   };
@@ -1164,6 +1165,7 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
 
     patchPeerConnectionAudioSenders();
     startAudioRouteScan();
+    audioRouteIndicatorVisible = true;
     updateAudioRouteIndicator("ready", "RNNOISE MIC PATCH READY", `${location.hostname || "local"} / mode ${getNoiseMode()}`);
 
     const mediaDevices = navigator.mediaDevices;
