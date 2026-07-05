@@ -199,10 +199,6 @@ function stopCapturesForFrame(frame) {
 
 function rememberWindowAudioCapture(source) {
   const windowHandle = getWindowHandleFromSourceId(source.id);
-  if (!windowHandle) {
-    pendingWindowAudioCapture = null;
-    return false;
-  }
 
   pendingWindowAudioCapture = {
     sourceId: source.id,
@@ -340,7 +336,7 @@ function configureSession(ses) {
       if (picked.shareAudio && isScreenSource && process.platform === "win32") {
         streams.audio = "loopback";
         pendingWindowAudioCapture = null;
-      } else if (picked.shareAudio && isWindowSource && process.platform === "win32") {
+      } else if (isWindowSource && process.platform === "win32") {
         rememberWindowAudioCapture(source);
       } else {
         pendingWindowAudioCapture = null;
@@ -539,7 +535,15 @@ ipcMain.handle("vlanya-window-audio:start", (event) => {
   }
 
   const token = randomUUID();
-  const child = spawn(helperPath, ["--hwnd", String(pending.windowHandle)], {
+  const helperArgs = [];
+  if (pending.windowHandle) {
+    helperArgs.push("--hwnd", String(pending.windowHandle));
+  }
+  if (pending.sourceName) {
+    helperArgs.push("--window-title", pending.sourceName);
+  }
+
+  const child = spawn(helperPath, helperArgs, {
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   });
@@ -570,7 +574,14 @@ ipcMain.handle("vlanya-window-audio:start", (event) => {
 
   child.stderr.on("data", (chunk) => {
     const message = chunk.toString("utf8").trim();
-    if (message) console.info(`[window-audio:${token.slice(0, 8)}] ${message}`);
+    if (message) {
+      console.info(`[window-audio:${token.slice(0, 8)}] ${message}`);
+      try {
+        frame.send("vlanya-window-audio:status", token, message);
+      } catch (_) {
+        // The frame may already be gone.
+      }
+    }
   });
 
   child.on("error", (error) => {

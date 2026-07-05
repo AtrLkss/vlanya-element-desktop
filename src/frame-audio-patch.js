@@ -32,6 +32,11 @@
           ipcRenderer.on("vlanya-window-audio:stop", listener);
           return () => ipcRenderer.off("vlanya-window-audio:stop", listener);
         },
+        onStatus: (callback) => {
+          const listener = (_event, token, message) => callback(token, message);
+          ipcRenderer.on("vlanya-window-audio:status", listener);
+          return () => ipcRenderer.off("vlanya-window-audio:status", listener);
+        },
       };
     } catch (_) {
       return null;
@@ -61,7 +66,9 @@
   const activePeerConnections = new Set();
   const displayAudioByVideoTrack = new WeakMap();
   const displayAudioSendersByPeerConnection = new WeakMap();
+  const peerConnectionBySender = new WeakMap();
   const processedTracks = new WeakMap();
+  let addDisplayAudioForVideoTrackToPeer = null;
   const stats = {
     peerConnections: 0,
     audioSenders: 0,
@@ -277,6 +284,7 @@
 
   const patchPeerConnection = () => {
     const NativePeerConnection = window.RTCPeerConnection || window.webkitRTCPeerConnection;
+    const nativePeerConnectionPrototype = NativePeerConnection?.prototype || null;
     if (NativePeerConnection && !NativePeerConnection.__vlanyaInjectedConstructorPatched) {
       const WrappedPeerConnection = function VlanyaInjectedRTCPeerConnection(...args) {
         const pc = new NativePeerConnection(...args);
@@ -297,9 +305,10 @@
       }
     }
 
-    const PeerConnection = window.RTCPeerConnection || window.webkitRTCPeerConnection;
-    if (PeerConnection?.prototype && !PeerConnection.prototype.__vlanyaInjectedSenderPatched) {
-      const originalAddTrack = PeerConnection.prototype.addTrack;
+    const peerConnectionPrototype =
+      nativePeerConnectionPrototype || (window.RTCPeerConnection || window.webkitRTCPeerConnection)?.prototype;
+    if (peerConnectionPrototype && !peerConnectionPrototype.__vlanyaInjectedSenderPatched) {
+      const originalAddTrack = peerConnectionPrototype.addTrack;
       const getDisplayAudioSenderMap = (pc) => {
         let senderMap = displayAudioSendersByPeerConnection.get(pc);
         if (!senderMap) {
@@ -311,6 +320,7 @@
       const rememberDisplayAudioSender = (pc, track, sender) => {
         if (!pc || !track || !sender) return sender;
         getDisplayAudioSenderMap(pc).set(track, sender);
+        peerConnectionBySender.set(sender, pc);
         return sender;
       };
       const getDisplayAudioSender = (pc, track) => {
@@ -336,7 +346,7 @@
       };
 
       if (typeof originalAddTrack === "function") {
-        PeerConnection.prototype.addTrack = function injectedAddTrack(track, ...streams) {
+        peerConnectionPrototype.addTrack = function injectedAddTrack(track, ...streams) {
           activePeerConnections.add(this);
           if (track?.__vlanyaDisplayAudio) {
             const existingSender = getDisplayAudioSender(this, track);
@@ -347,12 +357,14 @@
           }
           if (track?.kind === "video") {
             const sender = originalAddTrack.call(this, track, ...streams);
+            peerConnectionBySender.set(sender, this);
             addDisplayAudioForVideoTrack(this, track, streams);
             return sender;
           }
           if (!shouldProcessAudio(track)) return originalAddTrack.call(this, track, ...streams);
           const processedEntry = createStableProcessedTrack(track);
           const sender = originalAddTrack.call(this, processedEntry.track, ...streams);
+          peerConnectionBySender.set(sender, this);
           setState("pending", "INJECTED RNNOISE ADDTRACK PROCESSED-FIRST", formatTrack(processedEntry.track));
           processedEntry.ready.then(() => {
             setState("processed", "INJECTED RNNOISE ADDTRACK READY", formatTrack(sender.track || processedEntry.track));
@@ -363,25 +375,32 @@
         };
       }
 
-      const originalAddTransceiver = PeerConnection.prototype.addTransceiver;
+      const originalAddTransceiver = peerConnectionPrototype.addTransceiver;
       if (typeof originalAddTransceiver === "function") {
-        PeerConnection.prototype.addTransceiver = function injectedAddTransceiver(trackOrKind, init) {
+        peerConnectionPrototype.addTransceiver = function injectedAddTransceiver(trackOrKind, init) {
           activePeerConnections.add(this);
           if (trackOrKind?.__vlanyaDisplayAudio) {
             const existingSender = getDisplayAudioSender(this, trackOrKind);
             if (existingSender) return { sender: existingSender, receiver: null, direction: "sendonly", currentDirection: "sendonly" };
             const transceiver = originalAddTransceiver.call(this, trackOrKind, init);
+            if (transceiver?.sender) peerConnectionBySender.set(transceiver.sender, this);
             rememberDisplayAudioSender(this, trackOrKind, transceiver?.sender);
             return transceiver;
           }
           if (trackOrKind?.kind === "video") {
             const transceiver = originalAddTransceiver.call(this, trackOrKind, init);
+            if (transceiver?.sender) peerConnectionBySender.set(transceiver.sender, this);
             addDisplayAudioForVideoTrack(this, trackOrKind, []);
             return transceiver;
           }
-          if (!shouldProcessAudio(trackOrKind)) return originalAddTransceiver.call(this, trackOrKind, init);
+          if (!shouldProcessAudio(trackOrKind)) {
+            const transceiver = originalAddTransceiver.call(this, trackOrKind, init);
+            if (transceiver?.sender) peerConnectionBySender.set(transceiver.sender, this);
+            return transceiver;
+          }
           const processedEntry = createStableProcessedTrack(trackOrKind);
           const transceiver = originalAddTransceiver.call(this, processedEntry.track, init);
+          if (transceiver?.sender) peerConnectionBySender.set(transceiver.sender, this);
           setState("pending", "INJECTED RNNOISE TRANSCEIVER PROCESSED-FIRST", formatTrack(processedEntry.track));
           processedEntry.ready.then(() => {
             setState("processed", "INJECTED RNNOISE TRANSCEIVER READY", formatTrack(transceiver?.sender?.track || processedEntry.track));
@@ -392,7 +411,8 @@
         };
       }
 
-      Object.defineProperty(PeerConnection.prototype, "__vlanyaInjectedSenderPatched", { value: true });
+      addDisplayAudioForVideoTrackToPeer = addDisplayAudioForVideoTrack;
+      Object.defineProperty(peerConnectionPrototype, "__vlanyaInjectedSenderPatched", { value: true });
     }
 
     const Sender = window.RTCRtpSender;
@@ -400,6 +420,15 @@
       const originalReplaceTrack = Sender.prototype.replaceTrack;
       if (typeof originalReplaceTrack === "function") {
         Sender.prototype.replaceTrack = function injectedReplaceTrack(track) {
+          if (track?.kind === "video") {
+            const pc = peerConnectionBySender.get(this);
+            if (pc && typeof addDisplayAudioForVideoTrackToPeer === "function") {
+              addDisplayAudioForVideoTrackToPeer(pc, track, []);
+            } else if (displayAudioByVideoTrack.get(track)) {
+              setState("raw", "WINDOW AUDIO PEER UNKNOWN", "replaceTrack video sender has no peer connection");
+            }
+            return originalReplaceTrack.call(this, track);
+          }
           if (!shouldProcessAudio(track)) return originalReplaceTrack.call(this, track);
           setState("pending", "INJECTED RNNOISE REPLACETRACK", formatTrack(track));
           return processTrack(track).then((processed) =>
@@ -469,6 +498,9 @@
     const maxQueuedSamples = Math.max(48000, (session.sampleRate || 48000) * 2);
     let queuedSamples = 0;
     let stopped = false;
+    let offData = null;
+    let offStop = null;
+    let offStatus = null;
 
     const trimQueue = () => {
       while (queuedSamples > maxQueuedSamples && queue.length > 1) {
@@ -494,6 +526,7 @@
       stopped = true;
       offData?.();
       offStop?.();
+      offStatus?.();
       windowAudioIpc.stop(session.token).catch(() => {});
       try {
         driver?.stop();
@@ -521,6 +554,16 @@
       cleanup();
     };
 
+    const onStatus = (token, message) => {
+      if (token !== session.token || !message) return;
+      const nextMessage = String(message);
+      if (nextMessage.startsWith("READY")) {
+        setState("screen", "WINDOW AUDIO HELPER READY", nextMessage);
+      } else if (nextMessage.startsWith("ERR")) {
+        setState("raw", "WINDOW AUDIO HELPER ERROR", nextMessage);
+      }
+    };
+
     processor.onaudioprocess = (event) => {
       const output = event.outputBuffer.getChannelData(0);
       let outputOffset = 0;
@@ -544,8 +587,9 @@
       }
     };
 
-    const offData = windowAudioIpc.onData(onData);
-    const offStop = windowAudioIpc.onStop(onStop);
+    offData = windowAudioIpc.onData(onData);
+    offStop = windowAudioIpc.onStop(onStop);
+    offStatus = windowAudioIpc.onStatus?.(onStatus) || (() => {});
 
     if (driver && driverGain) {
       driverGain.gain.value = 0;

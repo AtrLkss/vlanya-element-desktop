@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.Marshalling;
+using System.Text;
 using System.Threading.Channels;
 using NAudio.CoreAudioApi;
 using NAudio.CoreAudioApi.Interfaces;
@@ -26,7 +27,7 @@ internal static class Program
                 return 0;
             }
 
-            var processId = options.ProcessId ?? ResolveProcessId(options.WindowHandle);
+            var processId = options.ProcessId ?? ResolveProcessId(options);
             if (processId <= 0)
             {
                 Console.Error.WriteLine("ERR no target process");
@@ -112,11 +113,66 @@ internal static class Program
         Console.Error.WriteLine("   or: Vlanya.WindowAudioCapture --hwnd <windowHandle> [--duration-ms <ms>]");
     }
 
-    private static int ResolveProcessId(long? windowHandle)
+    private static int ResolveProcessId(CaptureOptions options)
     {
-        if (windowHandle is null or <= 0) return 0;
-        _ = NativeMethods.GetWindowThreadProcessId(new IntPtr(windowHandle.Value), out var processId);
-        return unchecked((int)processId);
+        if (options.WindowHandle is > 0)
+        {
+            _ = NativeMethods.GetWindowThreadProcessId(new IntPtr(options.WindowHandle.Value), out var processId);
+            if (processId > 0) return unchecked((int)processId);
+        }
+
+        if (!string.IsNullOrWhiteSpace(options.WindowTitle))
+        {
+            return ResolveProcessIdByWindowTitle(options.WindowTitle);
+        }
+
+        return 0;
+    }
+
+    private static int ResolveProcessIdByWindowTitle(string expectedTitle)
+    {
+        var normalizedExpected = NormalizeWindowTitle(expectedTitle);
+        if (string.IsNullOrWhiteSpace(normalizedExpected)) return 0;
+
+        var bestProcessId = 0;
+        var bestScore = 0;
+        NativeMethods.EnumWindows((window, _) =>
+        {
+            if (!NativeMethods.IsWindowVisible(window)) return true;
+            var length = NativeMethods.GetWindowTextLengthW(window);
+            if (length <= 0) return true;
+
+            var builder = new StringBuilder(length + 1);
+            NativeMethods.GetWindowTextW(window, builder, builder.Capacity);
+            var title = NormalizeWindowTitle(builder.ToString());
+            if (string.IsNullOrWhiteSpace(title)) return true;
+
+            var score = ScoreWindowTitle(normalizedExpected, title);
+            if (score > bestScore)
+            {
+                NativeMethods.GetWindowThreadProcessId(window, out var processId);
+                if (processId > 0)
+                {
+                    bestScore = score;
+                    bestProcessId = unchecked((int)processId);
+                }
+            }
+
+            return true;
+        }, IntPtr.Zero);
+
+        return bestScore > 0 ? bestProcessId : 0;
+    }
+
+    private static string NormalizeWindowTitle(string value) =>
+        value.Trim().Replace('\u2014', '-').Replace('\u2013', '-').ToLowerInvariant();
+
+    private static int ScoreWindowTitle(string expected, string actual)
+    {
+        if (actual.Equals(expected, StringComparison.Ordinal)) return 100;
+        if (actual.Contains(expected, StringComparison.Ordinal)) return 80;
+        if (expected.Contains(actual, StringComparison.Ordinal)) return 60;
+        return 0;
     }
 
     private static string TryGetProcessName(int processId)
@@ -355,6 +411,7 @@ internal static class Program
     {
         public int? ProcessId { get; private init; }
         public long? WindowHandle { get; private init; }
+        public string? WindowTitle { get; private init; }
         public int? DurationMs { get; private init; }
         public bool ShowHelp { get; private init; }
 
@@ -362,6 +419,7 @@ internal static class Program
         {
             int? processId = null;
             long? windowHandle = null;
+            string? windowTitle = null;
             int? durationMs = null;
             var showHelp = args.Length == 0;
 
@@ -383,6 +441,9 @@ internal static class Program
                     case "--hwnd":
                         windowHandle = ParseWindowHandle(Next());
                         break;
+                    case "--window-title":
+                        windowTitle = Next();
+                        break;
                     case "--duration-ms":
                         durationMs = int.Parse(Next());
                         break;
@@ -396,15 +457,16 @@ internal static class Program
                 }
             }
 
-            if (!showHelp && processId is null && windowHandle is null)
+            if (!showHelp && processId is null && windowHandle is null && string.IsNullOrWhiteSpace(windowTitle))
             {
-                throw new ArgumentException("Pass --pid or --hwnd.");
+                throw new ArgumentException("Pass --pid, --hwnd, or --window-title.");
             }
 
             return new CaptureOptions
             {
                 ProcessId = processId,
                 WindowHandle = windowHandle,
+                WindowTitle = windowTitle,
                 DurationMs = durationMs,
                 ShowHelp = showHelp,
             };
@@ -425,6 +487,20 @@ internal static class Program
     {
         [DllImport("user32.dll", SetLastError = true)]
         public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+        public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        public static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        public static extern bool IsWindowVisible(IntPtr hWnd);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        public static extern int GetWindowTextLengthW(IntPtr hWnd);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        public static extern int GetWindowTextW(IntPtr hWnd, StringBuilder text, int maxCount);
 
         [DllImport("Mmdevapi.dll", ExactSpelling = true, PreserveSig = true)]
         public static extern int ActivateAudioInterfaceAsync(

@@ -613,6 +613,11 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
           ipcRenderer.on("vlanya-window-audio:stop", listener);
           return () => ipcRenderer.off("vlanya-window-audio:stop", listener);
         },
+        onStatus: (callback) => {
+          const listener = (_event, token, message) => callback(token, message);
+          ipcRenderer.on("vlanya-window-audio:status", listener);
+          return () => ipcRenderer.off("vlanya-window-audio:status", listener);
+        },
       },
       configurable: false,
       enumerable: false,
