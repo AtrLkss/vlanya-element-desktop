@@ -187,6 +187,8 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
   const AUDIO_ROUTE_INDICATOR_DETAIL_ID = "vlanya-audio-route-indicator-detail";
   const AUDIO_ROUTE_INDICATOR_TIME_ID = "vlanya-audio-route-indicator-time";
   const AUDIO_ROUTE_RELAY_TYPE = "vlanya-audio-route-state";
+  const WINDOW_AUDIO_RELAY_TYPE = "vlanya-window-audio-relay";
+  const WINDOW_AUDIO_RELAY_HOSTS = new Set(["chat.vlanya.ru", "call.vlanya.ru", "vlanya.ru"]);
   const FRAME_ID = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const IS_TOP_FRAME = (() => {
     try {
@@ -234,9 +236,11 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
     updatedAt: Date.now(),
   };
   const relayedAudioRoutes = new Map();
+  const windowAudioRelayTargets = new Map();
   let rnnoiseModulePromise = null;
   let rnnoiseInstancePromise = null;
   let audioRouteIndicatorVisible = IS_ELEMENT_CALL_FRAME;
+  let windowAudioRelayInstalled = false;
 
   const createAudioRouteSnapshot = () => ({
     type: AUDIO_ROUTE_RELAY_TYPE,
@@ -623,6 +627,111 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
       configurable: false,
       enumerable: false,
       writable: false,
+    });
+  };
+
+  const isAllowedWindowAudioRelayOrigin = (origin) => {
+    if (!origin || origin === "null") return true;
+    try {
+      const parsed = new URL(origin);
+      return parsed.protocol === "https:" && WINDOW_AUDIO_RELAY_HOSTS.has(parsed.hostname);
+    } catch (_) {
+      return false;
+    }
+  };
+
+  const postWindowAudioRelayMessage = (target, payload, transfer) => {
+    if (!target?.source) return;
+    const origin = target.origin && target.origin !== "null" ? target.origin : "*";
+    try {
+      if (transfer?.length) target.source.postMessage(payload, origin, transfer);
+      else target.source.postMessage(payload, origin);
+    } catch (_) {
+      try {
+        target.source.postMessage(payload, "*");
+      } catch (_) {
+        // The child frame may already be gone.
+      }
+    }
+  };
+
+  const installWindowAudioRelay = () => {
+    if (!IS_TOP_FRAME || windowAudioRelayInstalled || !window.vlanyaWindowAudio) return;
+    windowAudioRelayInstalled = true;
+
+    window.vlanyaWindowAudio.onData((token, chunk) => {
+      const target = windowAudioRelayTargets.get(token);
+      if (!target) return;
+      const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+      const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      postWindowAudioRelayMessage(target, {
+        type: WINDOW_AUDIO_RELAY_TYPE,
+        action: "data",
+        token,
+        chunk: buffer,
+      }, [buffer]);
+    });
+
+    window.vlanyaWindowAudio.onStop((token, reason) => {
+      const target = windowAudioRelayTargets.get(token);
+      if (!target) return;
+      postWindowAudioRelayMessage(target, {
+        type: WINDOW_AUDIO_RELAY_TYPE,
+        action: "stopped",
+        token,
+        reason: reason || null,
+      });
+      windowAudioRelayTargets.delete(token);
+    });
+
+    window.vlanyaWindowAudio.onStatus((token, message) => {
+      const target = windowAudioRelayTargets.get(token);
+      if (!target) return;
+      postWindowAudioRelayMessage(target, {
+        type: WINDOW_AUDIO_RELAY_TYPE,
+        action: "status",
+        token,
+        message: message || "",
+      });
+    });
+
+    window.addEventListener("message", async (event) => {
+      const data = event?.data;
+      if (!data || data.type !== WINDOW_AUDIO_RELAY_TYPE || !data.requestId) return;
+      if (!isAllowedWindowAudioRelayOrigin(event.origin) || !event.source) return;
+
+      const replyTarget = { source: event.source, origin: event.origin };
+      const reply = (result) => {
+        postWindowAudioRelayMessage(replyTarget, {
+          type: WINDOW_AUDIO_RELAY_TYPE,
+          action: "response",
+          requestId: data.requestId,
+          result,
+        });
+      };
+
+      try {
+        if (data.action === "start") {
+          const result = await window.vlanyaWindowAudio.start();
+          if (result?.ok && result.token) {
+            windowAudioRelayTargets.set(result.token, replyTarget);
+          }
+          reply(result || { ok: false, error: "empty-start-result" });
+          return;
+        }
+
+        if (data.action === "stop") {
+          const token = data.token;
+          const result = await window.vlanyaWindowAudio.stop(token);
+          if (token) windowAudioRelayTargets.delete(token);
+          reply(result || { ok: true });
+          return;
+        }
+
+        reply({ ok: false, error: `unknown-relay-action:${data.action || "none"}` });
+      } catch (error) {
+        reply({ ok: false, error: error?.message || String(error) });
+      }
     });
   };
 
@@ -1157,6 +1266,7 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
     installAudioRouteRelayListener();
     exposeNoiseControls();
     exposeWindowAudioBridge();
+    installWindowAudioRelay();
 
     if (!IS_ELEMENT_CALL_FRAME) {
       updateAudioRouteIndicator("ready", "MIC PATCH STANDBY", `${FRAME_LABEL} / chat microphone untouched`);

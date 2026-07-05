@@ -12,13 +12,97 @@
   Object.defineProperty(window, "__vlanyaFrameAudioPatch", { value: true });
 
   const ROUTE_TYPE = "vlanya-audio-route-state";
+  const WINDOW_AUDIO_RELAY_TYPE = "vlanya-window-audio-relay";
   const FRAME_ID = `injected-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const RNNOISE_PCM_SCALE = 32768;
+  const createWindowAudioRelayBridge = () => {
+    let target = null;
+    try {
+      if (window.top === window) return null;
+      target = window.top;
+    } catch (_) {
+      return null;
+    }
+    if (!target) return null;
+
+    const pending = new Map();
+    const dataHandlers = new Set();
+    const stopHandlers = new Set();
+    const statusHandlers = new Set();
+    let requestCounter = 0;
+
+    window.addEventListener("message", (event) => {
+      const data = event?.data;
+      if (!data || data.type !== WINDOW_AUDIO_RELAY_TYPE) return;
+
+      if (data.action === "response" && data.requestId) {
+        const entry = pending.get(data.requestId);
+        if (!entry) return;
+        pending.delete(data.requestId);
+        clearTimeout(entry.timer);
+        entry.resolve(data.result || { ok: false, error: "empty-relay-response" });
+        return;
+      }
+
+      if (data.action === "data" && data.token) {
+        for (const handler of dataHandlers) handler(data.token, data.chunk);
+        return;
+      }
+
+      if (data.action === "stopped" && data.token) {
+        for (const handler of stopHandlers) handler(data.token, data.reason || null);
+        return;
+      }
+
+      if (data.action === "status" && data.token) {
+        for (const handler of statusHandlers) handler(data.token, data.message || "");
+      }
+    });
+
+    const request = (action, payload = {}) => new Promise((resolve) => {
+      const requestId = `${FRAME_ID}-${++requestCounter}`;
+      const timer = setTimeout(() => {
+        pending.delete(requestId);
+        resolve({ ok: false, error: "relay-timeout" });
+      }, 5000);
+      pending.set(requestId, { resolve, timer });
+
+      try {
+        target.postMessage({
+          type: WINDOW_AUDIO_RELAY_TYPE,
+          action,
+          requestId,
+          ...payload,
+        }, "*");
+      } catch (error) {
+        clearTimeout(timer);
+        pending.delete(requestId);
+        resolve({ ok: false, error: error?.message || "relay-post-failed" });
+      }
+    });
+
+    return {
+      start: () => request("start"),
+      stop: (token) => request("stop", { token }),
+      onData: (callback) => {
+        dataHandlers.add(callback);
+        return () => dataHandlers.delete(callback);
+      },
+      onStop: (callback) => {
+        stopHandlers.add(callback);
+        return () => stopHandlers.delete(callback);
+      },
+      onStatus: (callback) => {
+        statusHandlers.add(callback);
+        return () => statusHandlers.delete(callback);
+      },
+    };
+  };
   const windowAudioIpc = (() => {
     if (window.vlanyaWindowAudio) return window.vlanyaWindowAudio;
     try {
       const ipcRenderer = require("electron")?.ipcRenderer;
-      if (!ipcRenderer) return null;
+      if (!ipcRenderer) return createWindowAudioRelayBridge();
       return {
         start: () => ipcRenderer.invoke("vlanya-window-audio:start"),
         stop: (token) => ipcRenderer.invoke("vlanya-window-audio:stop", token),
@@ -39,7 +123,7 @@
         },
       };
     } catch (_) {
-      return null;
+      return createWindowAudioRelayBridge();
     }
   })();
   const IS_TOP_FRAME = (() => {
@@ -509,7 +593,7 @@
       }
     };
 
-    const onData = (_event, token, chunk) => {
+    const onData = (token, chunk) => {
       if (token !== session.token || stopped) return;
       const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
       if (bytes.byteLength < 4) return;
@@ -547,7 +631,7 @@
       context.close().catch(() => {});
     };
 
-    const onStop = (_event, token) => {
+    const onStop = (token) => {
       if (token !== session.token) return;
       const track = destination.stream.getAudioTracks()[0];
       if (track?.readyState === "live") track.stop();
