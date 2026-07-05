@@ -1,4 +1,12 @@
 (() => {
+  const ipcRenderer = (() => {
+    try {
+      return require("electron")?.ipcRenderer || null;
+    } catch (_) {
+      return null;
+    }
+  })();
+
   const AUDIO_PROCESSING = {
     noiseSuppression: false,
     echoCancellation: false,
@@ -588,6 +596,30 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
     });
   };
 
+  const exposeWindowAudioBridge = () => {
+    if (window.vlanyaWindowAudio || !ipcRenderer) return;
+
+    Object.defineProperty(window, "vlanyaWindowAudio", {
+      value: {
+        start: () => ipcRenderer.invoke("vlanya-window-audio:start"),
+        stop: (token) => ipcRenderer.invoke("vlanya-window-audio:stop", token),
+        onData: (callback) => {
+          const listener = (_event, token, chunk) => callback(token, chunk);
+          ipcRenderer.on("vlanya-window-audio:data", listener);
+          return () => ipcRenderer.off("vlanya-window-audio:data", listener);
+        },
+        onStop: (callback) => {
+          const listener = (_event, token, reason) => callback(token, reason);
+          ipcRenderer.on("vlanya-window-audio:stop", listener);
+          return () => ipcRenderer.off("vlanya-window-audio:stop", listener);
+        },
+      },
+      configurable: false,
+      enumerable: false,
+      writable: false,
+    });
+  };
+
   const withAudioProcessing = (constraints = {}) => {
     if (!constraints || typeof constraints !== "object") return constraints;
     if (!("audio" in constraints) || constraints.audio === false) return constraints;
@@ -1118,6 +1150,7 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
   const patch = () => {
     installAudioRouteRelayListener();
     exposeNoiseControls();
+    exposeWindowAudioBridge();
 
     if (!IS_ELEMENT_CALL_FRAME) {
       updateAudioRouteIndicator("ready", "MIC PATCH STANDBY", `${FRAME_LABEL} / chat microphone untouched`);

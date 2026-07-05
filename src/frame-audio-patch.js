@@ -14,9 +14,25 @@
   const ROUTE_TYPE = "vlanya-audio-route-state";
   const FRAME_ID = `injected-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const RNNOISE_PCM_SCALE = 32768;
-  const ipcRenderer = (() => {
+  const windowAudioIpc = (() => {
+    if (window.vlanyaWindowAudio) return window.vlanyaWindowAudio;
     try {
-      return require("electron")?.ipcRenderer || null;
+      const ipcRenderer = require("electron")?.ipcRenderer;
+      if (!ipcRenderer) return null;
+      return {
+        start: () => ipcRenderer.invoke("vlanya-window-audio:start"),
+        stop: (token) => ipcRenderer.invoke("vlanya-window-audio:stop", token),
+        onData: (callback) => {
+          const listener = (_event, token, chunk) => callback(token, chunk);
+          ipcRenderer.on("vlanya-window-audio:data", listener);
+          return () => ipcRenderer.off("vlanya-window-audio:data", listener);
+        },
+        onStop: (callback) => {
+          const listener = (_event, token, reason) => callback(token, reason);
+          ipcRenderer.on("vlanya-window-audio:stop", listener);
+          return () => ipcRenderer.off("vlanya-window-audio:stop", listener);
+        },
+      };
     } catch (_) {
       return null;
     }
@@ -362,22 +378,32 @@
   };
 
   const createWindowProcessAudioTrack = async () => {
-    if (!ipcRenderer) return null;
+    if (!windowAudioIpc) {
+      setState("raw", "WINDOW AUDIO IPC MISSING", "preload bridge is unavailable");
+      return null;
+    }
 
-    const session = await ipcRenderer.invoke("vlanya-window-audio:start").catch((error) => ({
+    const session = await windowAudioIpc.start().catch((error) => ({
       ok: false,
       error: error?.message || String(error),
     }));
-    if (!session?.ok || !session.token) return null;
+    if (!session?.ok || !session.token) {
+      if (session?.error !== "no-pending-window-audio") {
+        setState("raw", "WINDOW AUDIO START FAILED", session?.error || "unknown");
+      }
+      return null;
+    }
 
     const context = createAudioContext(session.sampleRate || 48000);
     if (!context) {
-      ipcRenderer.invoke("vlanya-window-audio:stop", session.token).catch(() => {});
+      windowAudioIpc.stop(session.token).catch(() => {});
       return null;
     }
 
     const destination = context.createMediaStreamDestination();
-    const processor = context.createScriptProcessor(2048, 0, 1);
+    const processor = context.createScriptProcessor(2048, 1, 1);
+    const driver = context.createConstantSource?.() || null;
+    const driverGain = context.createGain?.() || null;
     const queue = [];
     const maxQueuedSamples = Math.max(48000, (session.sampleRate || 48000) * 2);
     let queuedSamples = 0;
@@ -405,9 +431,20 @@
     const cleanup = () => {
       if (stopped) return;
       stopped = true;
-      ipcRenderer.off("vlanya-window-audio:data", onData);
-      ipcRenderer.off("vlanya-window-audio:stop", onStop);
-      ipcRenderer.invoke("vlanya-window-audio:stop", session.token).catch(() => {});
+      offData?.();
+      offStop?.();
+      windowAudioIpc.stop(session.token).catch(() => {});
+      try {
+        driver?.stop();
+      } catch (_) {
+        // Already stopped.
+      }
+      try {
+        driver?.disconnect();
+        driverGain?.disconnect();
+      } catch (_) {
+        // Already disconnected.
+      }
       try {
         processor.disconnect();
       } catch (_) {
@@ -446,9 +483,15 @@
       }
     };
 
-    ipcRenderer.on("vlanya-window-audio:data", onData);
-    ipcRenderer.on("vlanya-window-audio:stop", onStop);
+    const offData = windowAudioIpc.onData(onData);
+    const offStop = windowAudioIpc.onStop(onStop);
 
+    if (driver && driverGain) {
+      driverGain.gain.value = 0;
+      driver.connect(driverGain);
+      driverGain.connect(processor);
+      driver.start();
+    }
     processor.connect(destination);
     await context.resume().catch(() => {});
 
