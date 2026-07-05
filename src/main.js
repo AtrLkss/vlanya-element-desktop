@@ -255,8 +255,9 @@ function configureSession(ses) {
         return;
       }
 
+      const isScreenSource = source.id.startsWith("screen:");
       const streams = { video: source };
-      if (picked.shareAudio && process.platform === "win32") {
+      if (picked.shareAudio && isScreenSource && process.platform === "win32") {
         streams.audio = "loopback";
       }
       callback(streams);
