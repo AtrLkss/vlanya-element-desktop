@@ -1,16 +1,15 @@
 (() => {
   const AUDIO_PROCESSING = {
-    noiseSuppression: true,
-    echoCancellation: true,
-    autoGainControl: true,
+    noiseSuppression: false,
+    echoCancellation: false,
+    autoGainControl: false,
     channelCount: { ideal: 1 },
   };
-  const MICROPHONE_SUPPRESSION_ENABLED = false;
 
   const NOISE_MODE_KEY = "vlanya.noiseSuppressionMode";
   const DEFAULT_NOISE_MODE = "deepfilter";
   const VALID_NOISE_MODES = new Set(["normal", "extreme", "deepfilter"]);
-  const DEEPFILTER_SUPPRESSION_LEVEL = 100;
+  const DEEPFILTER_SUPPRESSION_LEVEL = 65;
   const DEEPFILTER_PACKAGE = "deepfilternet3-noise-filter";
   const DEEPFILTER_ASSET_BASE = "https://cdn.mezon.ai/AI/models/datas/noise_suppression/deepfilternet3";
   const WORKLET_NAME = "vlanya-voice-gate";
@@ -824,11 +823,6 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
   };
 
   const processMicrophoneTrack = async (track) => {
-    if (!MICROPHONE_SUPPRESSION_ENABLED) {
-      updateAudioRouteIndicator("raw", "RAW MIC HOTFIX", formatTrackInfo(track));
-      return track;
-    }
-
     if (track.__vlanyaNoiseSuppressed || track.__vlanyaDisplayAudio) return track;
 
     const context = makeAudioContext();
@@ -902,8 +896,6 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
   };
 
   const getProcessedAudioTrack = (track) => {
-    if (!MICROPHONE_SUPPRESSION_ENABLED) return Promise.resolve(track);
-
     if (!track || track.kind !== "audio" || track.__vlanyaNoiseSuppressed || track.__vlanyaDisplayAudio) {
       return Promise.resolve(track);
     }
@@ -922,8 +914,6 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
   };
 
   const processMicrophoneStream = async (stream) => {
-    if (!MICROPHONE_SUPPRESSION_ENABLED) return stream;
-
     const audioTracks = stream.getAudioTracks();
     if (!audioTracks.length) return stream;
 
@@ -1013,39 +1003,7 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
     scanOutgoingAudioRoutes();
   };
 
-  const createSilentPlaceholderTrack = (sourceTrack) => {
-    const context = makeAudioContext();
-    if (!context) return null;
-
-    const destination = context.createMediaStreamDestination();
-    const silentTrack = destination.stream.getAudioTracks()[0];
-    if (!silentTrack) {
-      context.close().catch(() => undefined);
-      return null;
-    }
-
-    Object.defineProperty(silentTrack, "__vlanyaNoiseSuppressed", { value: true });
-    Object.defineProperty(silentTrack, "__vlanyaSilentPlaceholder", { value: true });
-    processingContexts.add(context);
-
-    let cleaned = false;
-    const cleanup = () => {
-      if (cleaned) return;
-      cleaned = true;
-      processingContexts.delete(context);
-      if (silentTrack.readyState !== "ended") silentTrack.stop();
-      context.close().catch(() => undefined);
-    };
-
-    Object.defineProperty(silentTrack, "__vlanyaCleanup", { value: cleanup });
-    sourceTrack?.addEventListener?.("ended", cleanup, { once: true });
-
-    return { track: silentTrack, cleanup };
-  };
-
   const maybeReplaceSenderTrack = (sender, track) => {
-    if (!MICROPHONE_SUPPRESSION_ENABLED) return;
-
     if (!sender || !shouldProcessOutgoingAudioTrack(track)) return;
 
     updateAudioRouteIndicator("pending", "RAW MIC FOUND: REPLACING", formatTrackInfo(track));
@@ -1068,8 +1026,6 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
   };
 
   const patchPeerConnectionAudioSenders = () => {
-    if (!MICROPHONE_SUPPRESSION_ENABLED) return;
-
     const NativePeerConnection = window.RTCPeerConnection || window.webkitRTCPeerConnection;
     if (NativePeerConnection && !NativePeerConnection.__vlanyaConstructorPatched) {
       const WrappedPeerConnection = function VlanyaPatchedRTCPeerConnection(...args) {
@@ -1105,20 +1061,21 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
             return sender;
           }
 
-          updateAudioRouteIndicator("pending", "MIC ADDTRACK: SENDING SILENCE", formatTrackInfo(track));
-          const placeholder = createSilentPlaceholderTrack(track);
-          const sender = originalAddTrack.call(this, placeholder?.track || track, ...streams);
-          reportOutgoingAudioTrack("addTrack placeholder", sender?.track || placeholder?.track || track);
+          updateAudioRouteIndicator("pending", "MIC ADDTRACK: RAW UNTIL FILTER READY", formatTrackInfo(track));
+          const sender = originalAddTrack.call(this, track, ...streams);
+          reportOutgoingAudioTrack("addTrack raw pending filter", sender?.track || track);
           getProcessedAudioTrack(track).then((processedTrack) => {
             const nextTrack = processedTrack || track;
+            if (nextTrack === track || (sender.track && sender.track !== track)) {
+              reportOutgoingAudioTrack("addTrack keep raw", sender?.track || track);
+              return undefined;
+            }
             return sender.replaceTrack(nextTrack).then(() => {
               reportOutgoingAudioTrack("addTrack processed replace", sender?.track || nextTrack);
-            }).finally(() => placeholder?.cleanup?.());
+            });
           }).catch((error) => {
-            console.warn("[Vlanya Element] failed to prepare outgoing audio track, using original track.", error);
-            sender.replaceTrack(track).then(() => {
-              reportOutgoingAudioTrack("addTrack fallback raw", sender?.track || track);
-            }).finally(() => placeholder?.cleanup?.()).catch(() => undefined);
+            console.warn("[Vlanya Element] failed to prepare outgoing audio track, keeping original track.", error);
+            reportOutgoingAudioTrack("addTrack fallback raw", sender?.track || track);
           });
           return sender;
         };
@@ -1136,20 +1093,21 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
             return transceiver;
           }
 
-          updateAudioRouteIndicator("pending", "MIC TRANSCEIVER: SENDING SILENCE", formatTrackInfo(trackOrKind));
-          const placeholder = createSilentPlaceholderTrack(trackOrKind);
-          const transceiver = originalAddTransceiver.call(this, placeholder?.track || trackOrKind, init);
-          reportOutgoingAudioTrack("addTransceiver placeholder", transceiver?.sender?.track || placeholder?.track || trackOrKind);
+          updateAudioRouteIndicator("pending", "MIC TRANSCEIVER: RAW UNTIL FILTER READY", formatTrackInfo(trackOrKind));
+          const transceiver = originalAddTransceiver.call(this, trackOrKind, init);
+          reportOutgoingAudioTrack("addTransceiver raw pending filter", transceiver?.sender?.track || trackOrKind);
           getProcessedAudioTrack(trackOrKind).then((processedTrack) => {
             const nextTrack = processedTrack || trackOrKind;
+            if (nextTrack === trackOrKind || (transceiver?.sender?.track && transceiver.sender.track !== trackOrKind)) {
+              reportOutgoingAudioTrack("addTransceiver keep raw", transceiver?.sender?.track || trackOrKind);
+              return undefined;
+            }
             return transceiver?.sender?.replaceTrack(nextTrack).then(() => {
               reportOutgoingAudioTrack("addTransceiver processed replace", transceiver?.sender?.track || nextTrack);
-            }).finally(() => placeholder?.cleanup?.());
+            });
           }).catch((error) => {
-            console.warn("[Vlanya Element] failed to prepare outgoing transceiver audio track, using original track.", error);
-            transceiver?.sender?.replaceTrack(trackOrKind).then(() => {
-              reportOutgoingAudioTrack("addTransceiver fallback raw", transceiver?.sender?.track || trackOrKind);
-            }).finally(() => placeholder?.cleanup?.()).catch(() => undefined);
+            console.warn("[Vlanya Element] failed to prepare outgoing transceiver audio track, keeping original track.", error);
+            reportOutgoingAudioTrack("addTransceiver fallback raw", transceiver?.sender?.track || trackOrKind);
           });
           return transceiver;
         };
