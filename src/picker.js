@@ -20,7 +20,7 @@ window.vlanyaPicker.onSources(({ sources, platform }) => {
     node.querySelector(".source-title").textContent = source.name;
     node.querySelector(".source-type").textContent = source.type === "screen" ? "Экран" : "Окно";
     node.addEventListener("click", () => {
-      const canShareAudio = platform === "win32" && source.type === "screen";
+      const canShareAudio = platform === "win32";
       window.vlanyaPicker.choose({
         sourceId: source.id,
         shareAudio: canShareAudio && shareAudioInput.checked,

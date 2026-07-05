@@ -1,5 +1,7 @@
 const path = require("node:path");
 const fs = require("node:fs");
+const { spawn } = require("node:child_process");
+const { randomUUID } = require("node:crypto");
 const {
   app,
   BrowserWindow,
@@ -25,6 +27,7 @@ const RNNOISE_BROWSER_BUNDLE_PATH = path.join(
   "dist",
   "rnnoise.js",
 );
+const WINDOW_AUDIO_HELPER_NAME = "Vlanya.WindowAudioCapture.exe";
 const ALLOWED_HOSTS = new Set([
   "chat.vlanya.ru",
   "call.vlanya.ru",
@@ -38,6 +41,8 @@ let tray = null;
 let isQuitting = false;
 let currentPickerResolve = null;
 let currentSources = [];
+let pendingWindowAudioCapture = null;
+const activeWindowAudioCaptures = new Map();
 const configuredWebContents = new WeakSet();
 let frameAudioPatchSource = null;
 let rnnoiseBrowserBundleSource = null;
@@ -147,6 +152,74 @@ function getAppWebPreferences() {
   };
 }
 
+function getWindowAudioHelperPath() {
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, "window-audio-capture", WINDOW_AUDIO_HELPER_NAME);
+  }
+  return path.join(__dirname, "..", "native", "window-audio-capture", "publish", WINDOW_AUDIO_HELPER_NAME);
+}
+
+function getWindowHandleFromSourceId(sourceId) {
+  const match = /^window:(\d+):/.exec(String(sourceId || ""));
+  if (!match) return null;
+  const handle = Number.parseInt(match[1], 10);
+  return Number.isSafeInteger(handle) && handle > 0 ? handle : null;
+}
+
+function isWindowAudioFrameAllowed(frame) {
+  if (!frame || frame.detached || frame.isDestroyed?.()) return false;
+  return isAllowedFrameUrl(frame.url) && isElementCallFrameUrl(frame.url);
+}
+
+function stopWindowAudioCapture(token) {
+  const capture = activeWindowAudioCaptures.get(token);
+  if (!capture) return;
+  activeWindowAudioCaptures.delete(token);
+
+  try {
+    capture.child.stdin?.end();
+  } catch (_) {
+    // The process may already be gone.
+  }
+
+  if (!capture.child.killed) {
+    try {
+      capture.child.kill();
+    } catch (_) {
+      // Best-effort cleanup.
+    }
+  }
+}
+
+function stopCapturesForFrame(frame) {
+  for (const [token, capture] of activeWindowAudioCaptures) {
+    if (capture.frame === frame) stopWindowAudioCapture(token);
+  }
+}
+
+function rememberWindowAudioCapture(source) {
+  const windowHandle = getWindowHandleFromSourceId(source.id);
+  if (!windowHandle) {
+    pendingWindowAudioCapture = null;
+    return false;
+  }
+
+  pendingWindowAudioCapture = {
+    sourceId: source.id,
+    sourceName: source.name || "Window",
+    windowHandle,
+    expiresAt: Date.now() + 15000,
+  };
+  return true;
+}
+
+function consumePendingWindowAudioCapture() {
+  const pending = pendingWindowAudioCapture;
+  pendingWindowAudioCapture = null;
+  if (!pending || pending.expiresAt < Date.now()) return null;
+  return pending;
+}
+
 function configureAppWebContents(contents) {
   if (!contents || configuredWebContents.has(contents)) return;
   configuredWebContents.add(contents);
@@ -190,6 +263,12 @@ function configureAppWebContents(contents) {
 
   contents.on("did-finish-load", () => {
     injectAllFrameAudioPatches(contents);
+  });
+
+  contents.on("destroyed", () => {
+    for (const [token, capture] of activeWindowAudioCaptures) {
+      if (capture.webContents === contents) stopWindowAudioCapture(token);
+    }
   });
 
   contents.on("did-attach-webview", (_event, guestContents) => {
@@ -256,9 +335,15 @@ function configureSession(ses) {
       }
 
       const isScreenSource = source.id.startsWith("screen:");
+      const isWindowSource = source.id.startsWith("window:");
       const streams = { video: source };
       if (picked.shareAudio && isScreenSource && process.platform === "win32") {
         streams.audio = "loopback";
+        pendingWindowAudioCapture = null;
+      } else if (picked.shareAudio && isWindowSource && process.platform === "win32") {
+        rememberWindowAudioCapture(source);
+      } else {
+        pendingWindowAudioCapture = null;
       }
       callback(streams);
     } catch (error) {
@@ -434,6 +519,92 @@ ipcMain.handle("picker:cancel", () => {
     pickerWindow = null;
   }
   if (resolve) resolve(null);
+});
+
+ipcMain.handle("vlanya-window-audio:start", (event) => {
+  const frame = event.senderFrame;
+  if (!isWindowAudioFrameAllowed(frame)) {
+    return { ok: false, error: "frame-not-allowed" };
+  }
+
+  const pending = consumePendingWindowAudioCapture();
+  if (!pending) {
+    return { ok: false, error: "no-pending-window-audio" };
+  }
+
+  const helperPath = getWindowAudioHelperPath();
+  if (!fs.existsSync(helperPath)) {
+    console.warn("window audio helper not found:", helperPath);
+    return { ok: false, error: "helper-not-found" };
+  }
+
+  const token = randomUUID();
+  const child = spawn(helperPath, ["--hwnd", String(pending.windowHandle)], {
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
+  });
+
+  const capture = {
+    token,
+    child,
+    frame,
+    webContents: event.sender,
+    sourceName: pending.sourceName,
+  };
+  activeWindowAudioCaptures.set(token, capture);
+
+  child.stdout.on("data", (chunk) => {
+    if (!activeWindowAudioCaptures.has(token)) return;
+    if (!isWindowAudioFrameAllowed(frame)) {
+      stopWindowAudioCapture(token);
+      return;
+    }
+
+    try {
+      frame.send("vlanya-window-audio:data", token, chunk);
+    } catch (error) {
+      console.warn("window audio frame send failed:", error?.message || error);
+      stopWindowAudioCapture(token);
+    }
+  });
+
+  child.stderr.on("data", (chunk) => {
+    const message = chunk.toString("utf8").trim();
+    if (message) console.info(`[window-audio:${token.slice(0, 8)}] ${message}`);
+  });
+
+  child.on("error", (error) => {
+    console.warn("window audio helper failed:", error?.message || error);
+    try {
+      frame.send("vlanya-window-audio:stop", token, error?.message || "helper-error");
+    } catch (_) {
+      // The frame may already be gone.
+    }
+    stopWindowAudioCapture(token);
+  });
+
+  child.on("exit", (code, signal) => {
+    activeWindowAudioCaptures.delete(token);
+    try {
+      frame.send("vlanya-window-audio:stop", token, code === 0 ? null : `exit ${code ?? signal}`);
+    } catch (_) {
+      // The frame may already be gone.
+    }
+  });
+
+  return {
+    ok: true,
+    token,
+    sampleRate: 48000,
+    channels: 1,
+    sourceName: pending.sourceName,
+  };
+});
+
+ipcMain.handle("vlanya-window-audio:stop", (event, token) => {
+  if (!isWindowAudioFrameAllowed(event.senderFrame)) return false;
+  stopWindowAudioCapture(token);
+  return true;
 });
 
 function buildMenu() {

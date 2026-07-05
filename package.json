@@ -1,13 +1,14 @@
 {
   "name": "vlanya-element-desktop",
-  "version": "0.1.25",
+  "version": "0.1.26",
   "private": true,
   "description": "Vlanya Element desktop wrapper with Windows screen-share audio loopback.",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
+    "build:window-audio-helper": "dotnet publish native/window-audio-capture/Vlanya.WindowAudioCapture.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o native/window-audio-capture/publish",
     "check": "node --check src/main.js && node --check src/preload.js && node --check src/frame-audio-patch.js && node --check src/picker-preload.js && node --check src/picker.js",
-    "pack": "electron-builder --win portable --x64"
+    "pack": "npm run build:window-audio-helper && electron-builder --win portable --x64"
   },
   "devDependencies": {
     "electron": "^39.2.7",
@@ -23,6 +24,15 @@
       "src/**/*",
       "node_modules/@shiguredo/rnnoise-wasm/**/*",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "native/window-audio-capture/publish",
+        "to": "window-audio-capture",
+        "filter": [
+          "Vlanya.WindowAudioCapture.exe"
+        ]
+      }
     ],
     "win": {
       "target": [
