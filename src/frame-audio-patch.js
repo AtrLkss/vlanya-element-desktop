@@ -59,6 +59,8 @@
   };
 
   const activePeerConnections = new Set();
+  const displayAudioByVideoTrack = new WeakMap();
+  const displayAudioSendersByPeerConnection = new WeakMap();
   const processedTracks = new WeakMap();
   const stats = {
     peerConnections: 0,
@@ -298,9 +300,56 @@
     const PeerConnection = window.RTCPeerConnection || window.webkitRTCPeerConnection;
     if (PeerConnection?.prototype && !PeerConnection.prototype.__vlanyaInjectedSenderPatched) {
       const originalAddTrack = PeerConnection.prototype.addTrack;
+      const getDisplayAudioSenderMap = (pc) => {
+        let senderMap = displayAudioSendersByPeerConnection.get(pc);
+        if (!senderMap) {
+          senderMap = new WeakMap();
+          displayAudioSendersByPeerConnection.set(pc, senderMap);
+        }
+        return senderMap;
+      };
+      const rememberDisplayAudioSender = (pc, track, sender) => {
+        if (!pc || !track || !sender) return sender;
+        getDisplayAudioSenderMap(pc).set(track, sender);
+        return sender;
+      };
+      const getDisplayAudioSender = (pc, track) => {
+        if (!pc || !track) return null;
+        return displayAudioSendersByPeerConnection.get(pc)?.get(track) || null;
+      };
+      const addDisplayAudioForVideoTrack = (pc, videoTrack, streams = []) => {
+        if (typeof originalAddTrack !== "function") return null;
+        const audioTrack = displayAudioByVideoTrack.get(videoTrack);
+        if (!audioTrack || audioTrack.readyState !== "live") return null;
+        const existingSender = getDisplayAudioSender(pc, audioTrack);
+        if (existingSender) return existingSender;
+
+        try {
+          const sender = originalAddTrack.call(pc, audioTrack, ...streams);
+          rememberDisplayAudioSender(pc, audioTrack, sender);
+          setState("screen", "WINDOW AUDIO PEER ATTACHED", formatTrack(audioTrack));
+          return sender;
+        } catch (error) {
+          setState("raw", "WINDOW AUDIO PEER ATTACH FAILED", error?.message || String(error));
+          return null;
+        }
+      };
+
       if (typeof originalAddTrack === "function") {
         PeerConnection.prototype.addTrack = function injectedAddTrack(track, ...streams) {
           activePeerConnections.add(this);
+          if (track?.__vlanyaDisplayAudio) {
+            const existingSender = getDisplayAudioSender(this, track);
+            if (existingSender) return existingSender;
+            const sender = originalAddTrack.call(this, track, ...streams);
+            rememberDisplayAudioSender(this, track, sender);
+            return sender;
+          }
+          if (track?.kind === "video") {
+            const sender = originalAddTrack.call(this, track, ...streams);
+            addDisplayAudioForVideoTrack(this, track, streams);
+            return sender;
+          }
           if (!shouldProcessAudio(track)) return originalAddTrack.call(this, track, ...streams);
           const processedEntry = createStableProcessedTrack(track);
           const sender = originalAddTrack.call(this, processedEntry.track, ...streams);
@@ -318,6 +367,18 @@
       if (typeof originalAddTransceiver === "function") {
         PeerConnection.prototype.addTransceiver = function injectedAddTransceiver(trackOrKind, init) {
           activePeerConnections.add(this);
+          if (trackOrKind?.__vlanyaDisplayAudio) {
+            const existingSender = getDisplayAudioSender(this, trackOrKind);
+            if (existingSender) return { sender: existingSender, receiver: null, direction: "sendonly", currentDirection: "sendonly" };
+            const transceiver = originalAddTransceiver.call(this, trackOrKind, init);
+            rememberDisplayAudioSender(this, trackOrKind, transceiver?.sender);
+            return transceiver;
+          }
+          if (trackOrKind?.kind === "video") {
+            const transceiver = originalAddTransceiver.call(this, trackOrKind, init);
+            addDisplayAudioForVideoTrack(this, trackOrKind, []);
+            return transceiver;
+          }
           if (!shouldProcessAudio(trackOrKind)) return originalAddTransceiver.call(this, trackOrKind, init);
           const processedEntry = createStableProcessedTrack(trackOrKind);
           const transceiver = originalAddTransceiver.call(this, processedEntry.track, init);
@@ -537,14 +598,26 @@
     const originalDisplayMedia = mediaDevices.getDisplayMedia?.bind(mediaDevices);
     if (originalDisplayMedia) {
       mediaDevices.getDisplayMedia = async (constraints = {}) => {
-        const stream = await originalDisplayMedia(constraints);
+        let next = constraints;
+        if (!next || typeof next !== "object") next = {};
+        const stream = await originalDisplayMedia({
+          ...next,
+          video: next.video ?? true,
+          audio: true,
+        });
         if (!stream.getAudioTracks().length) {
           const windowAudioTrack = await createWindowProcessAudioTrack();
           if (windowAudioTrack) {
             stream.addTrack(windowAudioTrack);
             for (const videoTrack of stream.getVideoTracks()) {
+              displayAudioByVideoTrack.set(videoTrack, windowAudioTrack);
               videoTrack.addEventListener("ended", () => windowAudioTrack.stop(), { once: true });
             }
+          }
+        } else {
+          const displayAudioTrack = stream.getAudioTracks()[0];
+          for (const videoTrack of stream.getVideoTracks()) {
+            displayAudioByVideoTrack.set(videoTrack, displayAudioTrack);
           }
         }
         return markDisplayAudioTracks(stream);
