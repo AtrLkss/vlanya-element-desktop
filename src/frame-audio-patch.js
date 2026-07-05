@@ -5,8 +5,6 @@
   const ROUTE_TYPE = "vlanya-audio-route-state";
   const FRAME_ID = `injected-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const DEEPFILTER_LEVEL = 55;
-  const DEEPFILTER_WET_GAIN = 0.92;
-  const DEEPFILTER_DRY_SAFETY_GAIN = 0.14;
   const IS_TOP_FRAME = (() => {
     try {
       return window.top === window;
@@ -125,53 +123,6 @@
     return { node, processor };
   };
 
-  const connectDeepFilterVoiceMix = (context, source, deepFilterNode, destination) => {
-    const wetGain = context.createGain();
-    const dryHighPass = context.createBiquadFilter();
-    const dryLowPass = context.createBiquadFilter();
-    const dryGain = context.createGain();
-    const limiter = context.createDynamicsCompressor();
-
-    wetGain.gain.value = DEEPFILTER_WET_GAIN;
-
-    dryHighPass.type = "highpass";
-    dryHighPass.frequency.value = 120;
-    dryHighPass.Q.value = 0.7;
-
-    dryLowPass.type = "lowpass";
-    dryLowPass.frequency.value = 4300;
-    dryLowPass.Q.value = 0.55;
-
-    dryGain.gain.value = DEEPFILTER_DRY_SAFETY_GAIN;
-
-    limiter.threshold.value = -6;
-    limiter.knee.value = 4;
-    limiter.ratio.value = 6;
-    limiter.attack.value = 0.002;
-    limiter.release.value = 0.08;
-
-    source.connect(deepFilterNode);
-    deepFilterNode.connect(wetGain);
-    wetGain.connect(limiter);
-
-    source.connect(dryHighPass);
-    dryHighPass.connect(dryLowPass);
-    dryLowPass.connect(dryGain);
-    dryGain.connect(limiter);
-
-    limiter.connect(destination);
-
-    return () => {
-      for (const node of [source, deepFilterNode, wetGain, dryHighPass, dryLowPass, dryGain, limiter]) {
-        try {
-          node.disconnect();
-        } catch (_) {
-          // Ignore disconnect races while the iframe is closing.
-        }
-      }
-    };
-  };
-
   const processTrack = async (track) => {
     if (!shouldProcessAudio(track)) return track;
     const existing = processedTracks.get(track);
@@ -193,7 +144,8 @@
         const source = context.createMediaStreamSource(new MediaStream([track]));
         const destination = context.createMediaStreamDestination();
         const { node, processor } = await makeDeepFilterNode(context);
-        const disconnectVoiceMix = connectDeepFilterVoiceMix(context, source, node, destination);
+        source.connect(node);
+        node.connect(destination);
 
         const processed = destination.stream.getAudioTracks()[0];
         if (!processed) {
@@ -207,7 +159,8 @@
 
         const cleanup = () => {
           try {
-            disconnectVoiceMix();
+            source.disconnect();
+            node.disconnect();
             processor?.destroy?.();
           } catch (_) {
             // Ignore disconnect races.
