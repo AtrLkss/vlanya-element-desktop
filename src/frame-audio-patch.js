@@ -123,79 +123,84 @@
     return { node, processor };
   };
 
-  const processTrack = async (track) => {
-    if (!shouldProcessAudio(track)) return track;
+  const createStableProcessedTrack = (track) => {
+    if (!shouldProcessAudio(track)) return { track, ready: Promise.resolve(track) };
     const existing = processedTracks.get(track);
     if (existing) return existing;
 
-    const promise = (async () => {
-      const context = makeAudioContext();
-      if (!context) {
-        setState("raw", "INJECTED RAW MIC: NO AUDIOCONTEXT", formatTrack(track));
-        return track;
-      }
+    const context = makeAudioContext();
+    if (!context) {
+      setState("raw", "INJECTED RAW MIC: NO AUDIOCONTEXT", formatTrack(track));
+      return { track, ready: Promise.resolve(track) };
+    }
 
+    const source = context.createMediaStreamSource(new MediaStream([track]));
+    const destination = context.createMediaStreamDestination();
+    const processed = destination.stream.getAudioTracks()[0];
+    if (!processed) {
+      context.close().catch(() => undefined);
+      setState("raw", "INJECTED RAW MIC: NO PROCESSED TRACK", formatTrack(track));
+      return { track, ready: Promise.resolve(track) };
+    }
+
+    Object.defineProperty(processed, "__vlanyaDeepFilterOnly", { value: true });
+    Object.defineProperty(processed, "__vlanyaInjectedProcessed", { value: true });
+    Object.defineProperty(processed, "__vlanyaNoiseSuppressed", { value: true });
+    Object.defineProperty(processed, "__vlanyaSourceTrackId", { value: track.id || "" });
+
+    let node = null;
+    let processor = null;
+    const cleanup = () => {
+      try {
+        source.disconnect();
+        node?.disconnect?.();
+        processor?.destroy?.();
+      } catch (_) {
+        // Ignore disconnect races.
+      }
+      context.close().catch(() => undefined);
+    };
+    track.addEventListener("ended", cleanup, { once: true });
+
+    const ready = (async () => {
       try {
         if (context.state === "suspended") {
           await context.resume().catch(() => undefined);
         }
 
-        setState("pending", "INJECTED DEEPFILTER LOADING", formatTrack(track));
-        const source = context.createMediaStreamSource(new MediaStream([track]));
-        const destination = context.createMediaStreamDestination();
-        const { node, processor } = await makeDeepFilterNode(context);
+        setState("pending", "INJECTED DEEPFILTER LOADING BEFORE SEND", formatTrack(track));
+        const deepFilter = await makeDeepFilterNode(context);
+        node = deepFilter.node;
+        processor = deepFilter.processor;
         source.connect(node);
         node.connect(destination);
-
-        const processed = destination.stream.getAudioTracks()[0];
-        if (!processed) {
-          throw new Error("DeepFilterNet output track was not created");
-        }
-
-        Object.defineProperty(processed, "__vlanyaDeepFilterOnly", { value: true });
-        Object.defineProperty(processed, "__vlanyaInjectedProcessed", { value: true });
-        Object.defineProperty(processed, "__vlanyaNoiseSuppressed", { value: true });
-        Object.defineProperty(processed, "__vlanyaSourceTrackId", { value: track.id || "" });
-
-        const cleanup = () => {
-          try {
-            source.disconnect();
-            node.disconnect();
-            processor?.destroy?.();
-          } catch (_) {
-            // Ignore disconnect races.
-          }
-          context.close().catch(() => undefined);
-        };
-        track.addEventListener("ended", cleanup, { once: true });
-
-        setState("processed", "INJECTED DEEPFILTER MIC READY", formatTrack(processed));
+        setState("processed", "INJECTED DEEPFILTER MIC READY BEFORE SEND", formatTrack(processed));
         return processed;
       } catch (error) {
-        setState("raw", "INJECTED RAW MIC: DEEPFILTER FAILED", `${formatTrack(track)} / ${error?.message || error}`);
-        await context.close().catch(() => undefined);
-        return track;
+        try {
+          source.connect(destination);
+        } catch (_) {
+          // Keep the stable output track even if direct fallback cannot connect.
+        }
+        setState("raw", "INJECTED RAW MIC: DEEPFILTER FAILED STABLE FALLBACK", `${formatTrack(track)} / ${error?.message || error}`);
+        return processed;
       }
     })();
 
-    processedTracks.set(track, promise);
-    return promise;
+    const entry = { track: processed, ready };
+    processedTracks.set(track, entry);
+    return entry;
+  };
+
+  const processTrack = async (track) => {
+    const entry = createStableProcessedTrack(track);
+    await entry.ready;
+    return entry.track;
   };
 
   const replaceSenderTrack = (sender, track, route) => {
     if (!sender || !shouldProcessAudio(track)) return;
-    setState("pending", "INJECTED RAW MIC FOUND", `${route}: ${formatTrack(track)}`);
-    processTrack(track).then((processed) => {
-      if (!processed || processed === track) {
-        setState("raw", "INJECTED RAW MIC SENT", `${route}: ${formatTrack(track)}`);
-        return undefined;
-      }
-      return sender.replaceTrack(processed).then(() => {
-        setState("processed", "INJECTED DEEPFILTER MIC SENT", `${route}: ${formatTrack(processed)}`);
-      });
-    }).catch((error) => {
-      setState("raw", "INJECTED RAW MIC ERROR", `${route}: ${error?.message || error}`);
-    });
+    setState("raw", "INJECTED RAW MIC FOUND: REJOIN FOR PROCESSED-FIRST", `${route}: ${formatTrack(track)}`);
   };
 
   const patchPeerConnection = () => {
@@ -227,19 +232,13 @@
         PeerConnection.prototype.addTrack = function injectedAddTrack(track, ...streams) {
           activePeerConnections.add(this);
           if (!shouldProcessAudio(track)) return originalAddTrack.call(this, track, ...streams);
-          const sender = originalAddTrack.call(this, track, ...streams);
-          setState("pending", "INJECTED DEEPFILTER ADDTRACK RAW UNTIL READY", formatTrack(track));
-          processTrack(track).then((processed) => {
-            const next = processed || track;
-            if (next === track || (sender.track && sender.track !== track)) {
-              setState("raw", "INJECTED RAW MIC KEPT", `addTrack: ${formatTrack(sender.track || track)}`);
-              return undefined;
-            }
-            return sender.replaceTrack(next).then(() => {
-              setState(next === track ? "raw" : "processed", next === track ? "INJECTED RAW MIC SENT" : "INJECTED DEEPFILTER MIC SENT", `addTrack: ${formatTrack(next)}`);
-            });
-          }).catch(() => {
-            setState("raw", "INJECTED RAW MIC KEPT", `addTrack fallback: ${formatTrack(sender.track || track)}`);
+          const processedEntry = createStableProcessedTrack(track);
+          const sender = originalAddTrack.call(this, processedEntry.track, ...streams);
+          setState("pending", "INJECTED DEEPFILTER ADDTRACK PROCESSED-FIRST", formatTrack(processedEntry.track));
+          processedEntry.ready.then(() => {
+            setState("processed", "INJECTED DEEPFILTER ADDTRACK READY", formatTrack(sender.track || processedEntry.track));
+          }).catch((error) => {
+            setState("raw", "INJECTED DEEPFILTER ADDTRACK ERROR", `${formatTrack(processedEntry.track)} / ${error?.message || error}`);
           });
           return sender;
         };
@@ -250,19 +249,13 @@
         PeerConnection.prototype.addTransceiver = function injectedAddTransceiver(trackOrKind, init) {
           activePeerConnections.add(this);
           if (!shouldProcessAudio(trackOrKind)) return originalAddTransceiver.call(this, trackOrKind, init);
-          const transceiver = originalAddTransceiver.call(this, trackOrKind, init);
-          setState("pending", "INJECTED DEEPFILTER TRANSCEIVER RAW UNTIL READY", formatTrack(trackOrKind));
-          processTrack(trackOrKind).then((processed) => {
-            const next = processed || trackOrKind;
-            if (next === trackOrKind || (transceiver?.sender?.track && transceiver.sender.track !== trackOrKind)) {
-              setState("raw", "INJECTED RAW MIC KEPT", `addTransceiver: ${formatTrack(transceiver?.sender?.track || trackOrKind)}`);
-              return undefined;
-            }
-            return transceiver?.sender?.replaceTrack(next).then(() => {
-              setState(next === trackOrKind ? "raw" : "processed", next === trackOrKind ? "INJECTED RAW MIC SENT" : "INJECTED DEEPFILTER MIC SENT", `addTransceiver: ${formatTrack(next)}`);
-            });
-          }).catch(() => {
-            setState("raw", "INJECTED RAW MIC KEPT", `addTransceiver fallback: ${formatTrack(transceiver?.sender?.track || trackOrKind)}`);
+          const processedEntry = createStableProcessedTrack(trackOrKind);
+          const transceiver = originalAddTransceiver.call(this, processedEntry.track, init);
+          setState("pending", "INJECTED DEEPFILTER TRANSCEIVER PROCESSED-FIRST", formatTrack(processedEntry.track));
+          processedEntry.ready.then(() => {
+            setState("processed", "INJECTED DEEPFILTER TRANSCEIVER READY", formatTrack(transceiver?.sender?.track || processedEntry.track));
+          }).catch((error) => {
+            setState("raw", "INJECTED DEEPFILTER TRANSCEIVER ERROR", `${formatTrack(processedEntry.track)} / ${error?.message || error}`);
           });
           return transceiver;
         };
