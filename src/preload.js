@@ -1,10 +1,11 @@
 (() => {
   const AUDIO_PROCESSING = {
-    noiseSuppression: false,
-    echoCancellation: false,
-    autoGainControl: false,
+    noiseSuppression: true,
+    echoCancellation: true,
+    autoGainControl: true,
     channelCount: { ideal: 1 },
   };
+  const MICROPHONE_SUPPRESSION_ENABLED = false;
 
   const NOISE_MODE_KEY = "vlanya.noiseSuppressionMode";
   const DEFAULT_NOISE_MODE = "deepfilter";
@@ -823,6 +824,11 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
   };
 
   const processMicrophoneTrack = async (track) => {
+    if (!MICROPHONE_SUPPRESSION_ENABLED) {
+      updateAudioRouteIndicator("raw", "RAW MIC HOTFIX", formatTrackInfo(track));
+      return track;
+    }
+
     if (track.__vlanyaNoiseSuppressed || track.__vlanyaDisplayAudio) return track;
 
     const context = makeAudioContext();
@@ -896,6 +902,8 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
   };
 
   const getProcessedAudioTrack = (track) => {
+    if (!MICROPHONE_SUPPRESSION_ENABLED) return Promise.resolve(track);
+
     if (!track || track.kind !== "audio" || track.__vlanyaNoiseSuppressed || track.__vlanyaDisplayAudio) {
       return Promise.resolve(track);
     }
@@ -914,6 +922,8 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
   };
 
   const processMicrophoneStream = async (stream) => {
+    if (!MICROPHONE_SUPPRESSION_ENABLED) return stream;
+
     const audioTracks = stream.getAudioTracks();
     if (!audioTracks.length) return stream;
 
@@ -1034,6 +1044,8 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
   };
 
   const maybeReplaceSenderTrack = (sender, track) => {
+    if (!MICROPHONE_SUPPRESSION_ENABLED) return;
+
     if (!sender || !shouldProcessOutgoingAudioTrack(track)) return;
 
     updateAudioRouteIndicator("pending", "RAW MIC FOUND: REPLACING", formatTrackInfo(track));
@@ -1056,6 +1068,8 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
   };
 
   const patchPeerConnectionAudioSenders = () => {
+    if (!MICROPHONE_SUPPRESSION_ENABLED) return;
+
     const NativePeerConnection = window.RTCPeerConnection || window.webkitRTCPeerConnection;
     if (NativePeerConnection && !NativePeerConnection.__vlanyaConstructorPatched) {
       const WrappedPeerConnection = function VlanyaPatchedRTCPeerConnection(...args) {

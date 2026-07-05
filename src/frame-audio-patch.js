@@ -1,6 +1,8 @@
 (() => {
   if (window.__vlanyaFrameAudioPatch) return;
   Object.defineProperty(window, "__vlanyaFrameAudioPatch", { value: true });
+  console.info("[Vlanya Element] frame audio processing disabled by raw-audio hotfix.");
+  return;
 
   const ROUTE_TYPE = "vlanya-audio-route-state";
   const FRAME_ID = `injected-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
