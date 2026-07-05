@@ -1,10 +1,19 @@
 (() => {
+  const IS_ELEMENT_CALL_FRAME = (() => {
+    try {
+      return location.hostname === "call.vlanya.ru" || location.pathname.includes("/widgets/element-call/");
+    } catch (_) {
+      return false;
+    }
+  })();
+  if (!IS_ELEMENT_CALL_FRAME) return;
+
   if (window.__vlanyaFrameAudioPatch) return;
   Object.defineProperty(window, "__vlanyaFrameAudioPatch", { value: true });
 
   const ROUTE_TYPE = "vlanya-audio-route-state";
   const FRAME_ID = `injected-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  const DEEPFILTER_LEVEL = 55;
+  const RNNOISE_PCM_SCALE = 32768;
   const IS_TOP_FRAME = (() => {
     try {
       return window.top === window;
@@ -38,8 +47,8 @@
   };
   const state = {
     level: "ready",
-    status: "INJECTED DEEPFILTER READY",
-    detail: `${FRAME_LABEL} / DeepFilterNet only`,
+    status: "INJECTED RNNOISE READY",
+    detail: `${FRAME_LABEL} / RNNoise`,
     updatedAt: Date.now(),
   };
 
@@ -81,7 +90,7 @@
   };
 
   const shouldProcessAudio = (track) =>
-    Boolean(track && track.kind === "audio" && !track.__vlanyaDeepFilterOnly && !track.__vlanyaDisplayAudio);
+    Boolean(track && track.kind === "audio" && !track.__vlanyaRnnoiseOnly && !track.__vlanyaDisplayAudio);
 
   const withAudioProcessing = (constraints = {}) => {
     if (!constraints || typeof constraints !== "object") return constraints;
@@ -106,21 +115,59 @@
     }
   };
 
-  const makeDeepFilterNode = async (context) => {
-    const Core = window.__vlanyaDeepFilterNet3Core;
-    if (typeof Core !== "function") {
-      throw new Error("DeepFilterNet browser bundle is not available");
-    }
+  const clampAudioSample = (sample) => Math.max(-1, Math.min(1, sample || 0));
 
-    const processor = new Core({
-      sampleRate: context.sampleRate || 48000,
-      noiseReductionLevel: DEEPFILTER_LEVEL,
-    });
-    await processor.initialize();
-    const node = await processor.createAudioWorkletNode(context);
-    processor.setNoiseSuppressionEnabled?.(true);
-    processor.setSuppressionLevel?.(DEEPFILTER_LEVEL);
-    return { node, processor };
+  const makeRnnoiseNode = async (context) => {
+    const Rnnoise = window.__vlanyaRnnoiseClass;
+    if (typeof Rnnoise !== "function") {
+      throw new Error("RNNoise browser bundle is not available");
+    }
+    const rnnoise = await Rnnoise.load();
+    const denoiseState = rnnoise.createDenoiseState();
+    const frameSize = rnnoise.frameSize || 480;
+    const node = context.createScriptProcessor(1024, 1, 1);
+    const inputFrame = new Float32Array(frameSize);
+    const outputFrames = [];
+    let inputOffset = 0;
+    let outputFrame = null;
+    let outputOffset = 0;
+    let destroyed = false;
+
+    const nextOutputSample = () => {
+      if (!outputFrame || outputOffset >= outputFrame.length) {
+        outputFrame = outputFrames.shift() || null;
+        outputOffset = 0;
+      }
+      if (!outputFrame) return 0;
+      const sample = outputFrame[outputOffset] / RNNOISE_PCM_SCALE;
+      outputOffset += 1;
+      return clampAudioSample(sample);
+    };
+
+    node.onaudioprocess = (event) => {
+      const input = event.inputBuffer.getChannelData(0);
+      const output = event.outputBuffer.getChannelData(0);
+      for (let i = 0; i < output.length; i += 1) {
+        output[i] = nextOutputSample();
+        inputFrame[inputOffset] = clampAudioSample(input[i]) * RNNOISE_PCM_SCALE;
+        inputOffset += 1;
+        if (inputOffset >= frameSize) {
+          const frame = new Float32Array(inputFrame);
+          denoiseState.processFrame(frame);
+          outputFrames.push(frame);
+          inputOffset = 0;
+        }
+      }
+    };
+
+    const destroy = () => {
+      if (destroyed) return;
+      destroyed = true;
+      denoiseState.destroy();
+      node.onaudioprocess = null;
+    };
+
+    return { node, processor: { destroy } };
   };
 
   const createStableProcessedTrack = (track) => {
@@ -143,7 +190,7 @@
       return { track, ready: Promise.resolve(track) };
     }
 
-    Object.defineProperty(processed, "__vlanyaDeepFilterOnly", { value: true });
+    Object.defineProperty(processed, "__vlanyaRnnoiseOnly", { value: true });
     Object.defineProperty(processed, "__vlanyaInjectedProcessed", { value: true });
     Object.defineProperty(processed, "__vlanyaNoiseSuppressed", { value: true });
     Object.defineProperty(processed, "__vlanyaSourceTrackId", { value: track.id || "" });
@@ -168,13 +215,13 @@
           await context.resume().catch(() => undefined);
         }
 
-        setState("pending", "INJECTED DEEPFILTER LOADING BEFORE SEND", formatTrack(track));
-        const deepFilter = await makeDeepFilterNode(context);
-        node = deepFilter.node;
-        processor = deepFilter.processor;
+        setState("pending", "INJECTED RNNOISE LOADING BEFORE SEND", formatTrack(track));
+        const rnnoise = await makeRnnoiseNode(context);
+        node = rnnoise.node;
+        processor = rnnoise.processor;
         source.connect(node);
         node.connect(destination);
-        setState("processed", "INJECTED DEEPFILTER MIC READY BEFORE SEND", formatTrack(processed));
+        setState("processed", "INJECTED RNNOISE MIC READY BEFORE SEND", formatTrack(processed));
         return processed;
       } catch (error) {
         try {
@@ -182,7 +229,7 @@
         } catch (_) {
           // Keep the stable output track even if direct fallback cannot connect.
         }
-        setState("raw", "INJECTED RAW MIC: DEEPFILTER FAILED STABLE FALLBACK", `${formatTrack(track)} / ${error?.message || error}`);
+        setState("raw", "INJECTED RAW MIC: RNNOISE FAILED STABLE FALLBACK", `${formatTrack(track)} / ${error?.message || error}`);
         return processed;
       }
     })();
@@ -234,11 +281,11 @@
           if (!shouldProcessAudio(track)) return originalAddTrack.call(this, track, ...streams);
           const processedEntry = createStableProcessedTrack(track);
           const sender = originalAddTrack.call(this, processedEntry.track, ...streams);
-          setState("pending", "INJECTED DEEPFILTER ADDTRACK PROCESSED-FIRST", formatTrack(processedEntry.track));
+          setState("pending", "INJECTED RNNOISE ADDTRACK PROCESSED-FIRST", formatTrack(processedEntry.track));
           processedEntry.ready.then(() => {
-            setState("processed", "INJECTED DEEPFILTER ADDTRACK READY", formatTrack(sender.track || processedEntry.track));
+            setState("processed", "INJECTED RNNOISE ADDTRACK READY", formatTrack(sender.track || processedEntry.track));
           }).catch((error) => {
-            setState("raw", "INJECTED DEEPFILTER ADDTRACK ERROR", `${formatTrack(processedEntry.track)} / ${error?.message || error}`);
+            setState("raw", "INJECTED RNNOISE ADDTRACK ERROR", `${formatTrack(processedEntry.track)} / ${error?.message || error}`);
           });
           return sender;
         };
@@ -251,11 +298,11 @@
           if (!shouldProcessAudio(trackOrKind)) return originalAddTransceiver.call(this, trackOrKind, init);
           const processedEntry = createStableProcessedTrack(trackOrKind);
           const transceiver = originalAddTransceiver.call(this, processedEntry.track, init);
-          setState("pending", "INJECTED DEEPFILTER TRANSCEIVER PROCESSED-FIRST", formatTrack(processedEntry.track));
+          setState("pending", "INJECTED RNNOISE TRANSCEIVER PROCESSED-FIRST", formatTrack(processedEntry.track));
           processedEntry.ready.then(() => {
-            setState("processed", "INJECTED DEEPFILTER TRANSCEIVER READY", formatTrack(transceiver?.sender?.track || processedEntry.track));
+            setState("processed", "INJECTED RNNOISE TRANSCEIVER READY", formatTrack(transceiver?.sender?.track || processedEntry.track));
           }).catch((error) => {
-            setState("raw", "INJECTED DEEPFILTER TRANSCEIVER ERROR", `${formatTrack(processedEntry.track)} / ${error?.message || error}`);
+            setState("raw", "INJECTED RNNOISE TRANSCEIVER ERROR", `${formatTrack(processedEntry.track)} / ${error?.message || error}`);
           });
           return transceiver;
         };
@@ -270,10 +317,10 @@
       if (typeof originalReplaceTrack === "function") {
         Sender.prototype.replaceTrack = function injectedReplaceTrack(track) {
           if (!shouldProcessAudio(track)) return originalReplaceTrack.call(this, track);
-          setState("pending", "INJECTED DEEPFILTER REPLACETRACK", formatTrack(track));
+          setState("pending", "INJECTED RNNOISE REPLACETRACK", formatTrack(track));
           return processTrack(track).then((processed) =>
             originalReplaceTrack.call(this, processed || track).then((result) => {
-              setState(processed === track ? "raw" : "processed", processed === track ? "INJECTED RAW MIC SENT" : "INJECTED DEEPFILTER MIC SENT", `replaceTrack: ${formatTrack(processed || track)}`);
+              setState(processed === track ? "raw" : "processed", processed === track ? "INJECTED RAW MIC SENT" : "INJECTED RNNOISE MIC SENT", `replaceTrack: ${formatTrack(processed || track)}`);
               return result;
             }),
           );
@@ -342,7 +389,7 @@
         }
         audioSenders += 1;
         if (track.__vlanyaSilentPlaceholder) placeholderSenders += 1;
-        if (track.__vlanyaNoiseSuppressed || track.__vlanyaInjectedProcessed || track.__vlanyaDeepFilterOnly) processedSenders += 1;
+        if (track.__vlanyaNoiseSuppressed || track.__vlanyaInjectedProcessed || track.__vlanyaRnnoiseOnly) processedSenders += 1;
         if (shouldProcessAudio(track)) {
           rawSenders += 1;
           replaceSenderTrack(sender, track, "scan");

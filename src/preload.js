@@ -7,11 +7,10 @@
   };
 
   const NOISE_MODE_KEY = "vlanya.noiseSuppressionMode";
-  const DEFAULT_NOISE_MODE = "deepfilter";
-  const VALID_NOISE_MODES = new Set(["normal", "extreme", "deepfilter"]);
-  const DEEPFILTER_SUPPRESSION_LEVEL = 55;
-  const DEEPFILTER_PACKAGE = "deepfilternet3-noise-filter";
-  const DEEPFILTER_ASSET_BASE = "https://cdn.mezon.ai/AI/models/datas/noise_suppression/deepfilternet3";
+  const DEFAULT_NOISE_MODE = "rnnoise";
+  const VALID_NOISE_MODES = new Set(["normal", "extreme", "rnnoise"]);
+  const RNNOISE_PACKAGE = "@shiguredo/rnnoise-wasm";
+  const RNNOISE_PCM_SCALE = 32768;
   const WORKLET_NAME = "vlanya-voice-gate";
   const WORKLET_CODE = `
 class VlanyaVoiceGate extends AudioWorkletProcessor {
@@ -173,7 +172,6 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
 `;
 
   const processingContexts = new Set();
-  const processedAudioTrackPromises = new WeakMap();
   const processedAudioTrackEntries = new WeakMap();
   const activePeerConnections = new Set();
   const AUDIO_ROUTE_INDICATOR_ID = "vlanya-audio-route-indicator";
@@ -194,6 +192,13 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
       return `${location.hostname || "local"}${location.pathname || ""}`;
     } catch (_) {
       return "unknown-frame";
+    }
+  })();
+  const IS_ELEMENT_CALL_FRAME = (() => {
+    try {
+      return location.hostname === "call.vlanya.ru" || location.pathname.includes("/widgets/element-call/");
+    } catch (_) {
+      return false;
     }
   })();
   const AUDIO_ROUTE_COLORS = {
@@ -221,7 +226,8 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
     updatedAt: Date.now(),
   };
   const relayedAudioRoutes = new Map();
-  let deepFilterModulePromise = null;
+  let rnnoiseModulePromise = null;
+  let rnnoiseInstancePromise = null;
   let audioRouteIndicatorVisible = false;
 
   const createAudioRouteSnapshot = () => ({
@@ -450,120 +456,91 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
     updateAudioRouteIndicator("raw", "RAW MIC SENT", `${route}: ${formatTrackInfo(track)}`);
   };
 
-  const importDeepFilterModule = () => {
-    if (deepFilterModulePromise) return deepFilterModulePromise;
+  const importRnnoiseModule = () => {
+    if (rnnoiseModulePromise) return rnnoiseModulePromise;
 
-    deepFilterModulePromise = (async () => {
+    rnnoiseModulePromise = (async () => {
       if (typeof require === "function") {
         try {
           const path = require("node:path");
           const { pathToFileURL } = require("node:url");
-          const commonJsEntry = require.resolve(DEEPFILTER_PACKAGE);
-          const esmEntry = path.join(path.dirname(commonJsEntry), "index.esm.js");
-          return import(pathToFileURL(esmEntry).href);
+          const entry = path.join(__dirname, "..", "node_modules", "@shiguredo", "rnnoise-wasm", "dist", "rnnoise.js");
+          return import(pathToFileURL(entry).href);
         } catch (error) {
-          console.warn("[Vlanya Element] DeepFilterNet local module lookup failed, trying browser import.", error);
+          console.warn("[Vlanya Element] RNNoise local module lookup failed, trying browser import.", error);
         }
       }
 
-      return import(DEEPFILTER_PACKAGE);
+      return import(RNNOISE_PACKAGE);
     })();
 
-    return deepFilterModulePromise;
+    return rnnoiseModulePromise;
   };
 
-  const fetchDeepFilterAssetWithNode = (url, redirectCount = 0) =>
-    new Promise((resolve, reject) => {
-      if (typeof require !== "function") {
-        reject(new Error("Node asset loader is not available"));
-        return;
+  const getRnnoiseInstance = async () => {
+    if (!rnnoiseInstancePromise) {
+      rnnoiseInstancePromise = importRnnoiseModule().then((module) => module.Rnnoise.load());
+    }
+    return rnnoiseInstancePromise;
+  };
+
+  const clampAudioSample = (sample) => Math.max(-1, Math.min(1, sample || 0));
+
+  const makeRnnoiseNode = async (context) => {
+    const rnnoise = await getRnnoiseInstance();
+    const denoiseState = rnnoise.createDenoiseState();
+    const frameSize = rnnoise.frameSize || 480;
+    const node = context.createScriptProcessor(1024, 1, 1);
+    const inputFrame = new Float32Array(frameSize);
+    const outputFrames = [];
+    let inputOffset = 0;
+    let outputFrame = null;
+    let outputOffset = 0;
+    let destroyed = false;
+
+    const nextOutputSample = () => {
+      if (!outputFrame || outputOffset >= outputFrame.length) {
+        outputFrame = outputFrames.shift() || null;
+        outputOffset = 0;
       }
-
-      const http = require("node:http");
-      const https = require("node:https");
-      const { Buffer } = require("node:buffer");
-      const client = url.startsWith("http:") ? http : https;
-      const request = client.get(
-        url,
-        {
-          headers: {
-            "User-Agent": "Vlanya-Element-DeepFilterNet/0.1",
-          },
-        },
-        (response) => {
-          const status = response.statusCode || 0;
-          const redirectUrl = response.headers.location;
-          if (status >= 300 && status < 400 && redirectUrl) {
-            response.resume();
-            if (redirectCount >= 5) {
-              reject(new Error(`Too many redirects while loading ${url}`));
-              return;
-            }
-            const nextUrl = new URL(redirectUrl, url).toString();
-            fetchDeepFilterAssetWithNode(nextUrl, redirectCount + 1).then(resolve, reject);
-            return;
-          }
-
-          if (status < 200 || status >= 300) {
-            response.resume();
-            reject(new Error(`DeepFilterNet asset request failed with HTTP ${status}`));
-            return;
-          }
-
-          const chunks = [];
-          response.on("data", (chunk) => chunks.push(chunk));
-          response.on("end", () => {
-            const buffer = Buffer.concat(chunks);
-            resolve(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
-          });
-        },
-      );
-
-      request.setTimeout(45000, () => {
-        request.destroy(new Error(`Timed out loading ${url}`));
-      });
-      request.on("error", reject);
-    });
-
-  const createDeepFilterAssetLoader = () => {
-    if (typeof require !== "function") return null;
-
-    return {
-      getAssetUrls: () => ({
-        wasm: `${DEEPFILTER_ASSET_BASE}/v3/pkg/df_bg.wasm`,
-        model: `${DEEPFILTER_ASSET_BASE}/v3/models/DeepFilterNet3_onnx.tar.gz`,
-      }),
-      fetchAsset: fetchDeepFilterAssetWithNode,
+      if (!outputFrame) return 0;
+      const sample = outputFrame[outputOffset] / RNNOISE_PCM_SCALE;
+      outputOffset += 1;
+      return clampAudioSample(sample);
     };
-  };
 
-  const makeDeepFilterNode = async (context) => {
-    const module = await importDeepFilterModule();
-    const Core = module?.DeepFilterNet3Core;
-    if (typeof Core !== "function") {
-      throw new Error("DeepFilterNet3Core export was not found");
-    }
+    node.onaudioprocess = (event) => {
+      const input = event.inputBuffer.getChannelData(0);
+      const output = event.outputBuffer.getChannelData(0);
 
-    const processor = new Core({
-      sampleRate: context.sampleRate || 48000,
-      noiseReductionLevel: DEEPFILTER_SUPPRESSION_LEVEL,
-    });
-    const nodeAssetLoader = createDeepFilterAssetLoader();
-    if (nodeAssetLoader) {
-      processor.assetLoader = nodeAssetLoader;
-    }
+      for (let i = 0; i < output.length; i += 1) {
+        output[i] = nextOutputSample();
+        inputFrame[inputOffset] = clampAudioSample(input[i]) * RNNOISE_PCM_SCALE;
+        inputOffset += 1;
 
-    await processor.initialize();
-    const node = await processor.createAudioWorkletNode(context);
-    processor.setNoiseSuppressionEnabled?.(true);
-    processor.setSuppressionLevel?.(DEEPFILTER_SUPPRESSION_LEVEL);
+        if (inputOffset >= frameSize) {
+          const frame = new Float32Array(inputFrame);
+          denoiseState.processFrame(frame);
+          outputFrames.push(frame);
+          inputOffset = 0;
+        }
+      }
+    };
 
-    return { node, processor };
+    const destroy = () => {
+      if (destroyed) return;
+      destroyed = true;
+      denoiseState.destroy();
+      node.onaudioprocess = null;
+    };
+
+    return { node, processor: { destroy } };
   };
 
   const getNoiseMode = () => {
     try {
       const storedMode = window.localStorage?.getItem(NOISE_MODE_KEY);
+      if (storedMode === "deepfilter") return DEFAULT_NOISE_MODE;
       return VALID_NOISE_MODES.has(storedMode) ? storedMode : DEFAULT_NOISE_MODE;
     } catch (_) {
       return DEFAULT_NOISE_MODE;
@@ -589,8 +566,10 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
         setMode: setNoiseMode,
         setExtreme: (enabled = true) => setNoiseMode(enabled ? "extreme" : "normal"),
         isExtreme: () => getNoiseMode() === "extreme",
-        setDeepFilterNet: (enabled = true) => setNoiseMode(enabled ? "deepfilter" : "extreme"),
-        isDeepFilterNet: () => getNoiseMode() === "deepfilter",
+        setRnnoise: (enabled = true) => setNoiseMode(enabled ? "rnnoise" : "extreme"),
+        isRnnoise: () => getNoiseMode() === "rnnoise",
+        setDeepFilterNet: (enabled = true) => setNoiseMode(enabled ? "rnnoise" : "extreme"),
+        isDeepFilterNet: () => getNoiseMode() === "rnnoise",
         getRouteState: () => ({ ...audioRouteState }),
         showRouteIndicator: () => {
           audioRouteIndicatorVisible = true;
@@ -848,13 +827,13 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
     }
 
     Object.defineProperty(processedTrack, "__vlanyaNoiseSuppressed", { value: true });
-    Object.defineProperty(processedTrack, "__vlanyaDeepFilterOnly", { value: true });
-    Object.defineProperty(processedTrack, "__vlanyaNoiseMode", { value: "deepfilter" });
+    Object.defineProperty(processedTrack, "__vlanyaRnnoiseOnly", { value: true });
+    Object.defineProperty(processedTrack, "__vlanyaNoiseMode", { value: "rnnoise" });
     Object.defineProperty(processedTrack, "__vlanyaSourceTrackId", { value: track.id || "" });
     processingContexts.add(context);
 
-    let deepFilterNode = null;
-    let deepFilterProcessor = null;
+    let rnnoiseNode = null;
+    let rnnoiseProcessor = null;
     let cleaned = false;
     const cleanup = () => {
       if (cleaned) return;
@@ -866,11 +845,11 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
         // Ignore disconnect races.
       }
       try {
-        deepFilterNode?.disconnect?.();
+        rnnoiseNode?.disconnect?.();
       } catch (_) {
         // Ignore disconnect races.
       }
-      deepFilterProcessor?.destroy?.();
+      rnnoiseProcessor?.destroy?.();
       context.close().catch(() => undefined);
     };
 
@@ -892,34 +871,33 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
 
     const ready = (async () => {
       try {
-        updateAudioRouteIndicator("pending", "DEEPFILTER MIC PROCESSING BEFORE SEND", formatTrackInfo(track));
+        updateAudioRouteIndicator("pending", "RNNOISE MIC PROCESSING BEFORE SEND", formatTrackInfo(track));
         if (context.state === "suspended") {
           await context.resume().catch(() => undefined);
         }
 
-        const deepFilter = await makeDeepFilterNode(context);
-        deepFilterNode = deepFilter.node;
-        deepFilterProcessor = deepFilter.processor;
-        source.connect(deepFilterNode);
-        deepFilterNode.connect(destination);
-        console.info("[Vlanya Element] stable DeepFilterNet microphone track is ready before WebRTC send.");
-        updateAudioRouteIndicator("processed", "DEEPFILTER MIC READY BEFORE SEND", formatTrackInfo(processedTrack));
+        const rnnoise = await makeRnnoiseNode(context);
+        rnnoiseNode = rnnoise.node;
+        rnnoiseProcessor = rnnoise.processor;
+        source.connect(rnnoiseNode);
+        rnnoiseNode.connect(destination);
+        console.info("[Vlanya Element] stable RNNoise microphone track is ready before WebRTC send.");
+        updateAudioRouteIndicator("processed", "RNNOISE MIC READY BEFORE SEND", formatTrackInfo(processedTrack));
         return processedTrack;
       } catch (error) {
-        console.warn("[Vlanya Element] DeepFilterNet processing failed, passing microphone through the stable output track.", error);
+        console.warn("[Vlanya Element] RNNoise processing failed, passing microphone through the stable output track.", error);
         try {
           source.connect(destination);
         } catch (_) {
           // If direct fallback cannot connect, keep the output track silent instead of crashing capture.
         }
-        updateAudioRouteIndicator("raw", "RAW MIC: DEEPFILTER FAILED STABLE FALLBACK", `${formatTrackInfo(track)} / ${error?.message || error}`);
+        updateAudioRouteIndicator("raw", "RAW MIC: RNNOISE FAILED STABLE FALLBACK", `${formatTrackInfo(track)} / ${error?.message || error}`);
         return processedTrack;
       }
     })();
 
     const entry = { track: processedTrack, ready };
     processedAudioTrackEntries.set(track, entry);
-    processedAudioTrackPromises.set(track, ready);
     return entry;
   };
 
@@ -1140,9 +1118,15 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
   const patch = () => {
     installAudioRouteRelayListener();
     exposeNoiseControls();
+
+    if (!IS_ELEMENT_CALL_FRAME) {
+      updateAudioRouteIndicator("ready", "MIC PATCH STANDBY", `${FRAME_LABEL} / chat microphone untouched`);
+      return;
+    }
+
     patchPeerConnectionAudioSenders();
     startAudioRouteScan();
-    updateAudioRouteIndicator("ready", "MIC PATCH READY", `${location.hostname || "local"} / mode ${getNoiseMode()}`);
+    updateAudioRouteIndicator("ready", "RNNOISE MIC PATCH READY", `${location.hostname || "local"} / mode ${getNoiseMode()}`);
 
     const mediaDevices = navigator.mediaDevices;
     if (!mediaDevices || mediaDevices.__vlanyaPatched) return;
@@ -1180,7 +1164,7 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
     }
 
     Object.defineProperty(mediaDevices, "__vlanyaPatched", { value: true });
-    console.info(`[Vlanya Element] media capture patched for system audio and "${getNoiseMode()}" microphone suppression.`);
+    console.info(`[Vlanya Element] Element Call media capture patched for system audio and "${getNoiseMode()}" microphone suppression.`);
   };
 
   patch();
