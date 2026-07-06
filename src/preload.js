@@ -1073,23 +1073,6 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
     return stream;
   };
 
-  const removeNativeDisplayAudioTracks = (stream) => {
-    if (!stream?.getAudioTracks) return;
-    for (const track of stream.getAudioTracks()) {
-      if (track.__vlanyaWindowProcessAudio) continue;
-      try {
-        stream.removeTrack(track);
-      } catch (_) {
-        // Best effort: the stream may already be detached.
-      }
-      try {
-        track.stop();
-      } catch (_) {
-        // Best effort: the browser may already have stopped the track.
-      }
-    }
-  };
-
   const shouldProcessOutgoingAudioTrack = (track) =>
     Boolean(track && track.kind === "audio" && !track.__vlanyaNoiseSuppressed && !track.__vlanyaDisplayAudio);
 
@@ -1309,7 +1292,6 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
           video: next.video ?? true,
           audio: true,
         });
-        removeNativeDisplayAudioTracks(stream);
         return markDisplayAudioTracks(stream);
       };
     }

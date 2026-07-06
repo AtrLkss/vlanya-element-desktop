@@ -346,7 +346,10 @@ function configureSession(ses) {
       const isScreenSource = source.id.startsWith("screen:");
       const isWindowSource = source.id.startsWith("window:");
       const streams = { video: source };
-      if (picked.shareAudio && isWindowSource && process.platform === "win32") {
+      if (picked.shareAudio && isScreenSource && process.platform === "win32") {
+        streams.audio = "loopback";
+        pendingWindowAudioCapture = null;
+      } else if (isWindowSource && process.platform === "win32") {
         rememberWindowAudioCapture(source);
       } else {
         pendingWindowAudioCapture = null;
