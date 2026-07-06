@@ -537,6 +537,23 @@
     return stream;
   };
 
+  const removeNativeDisplayAudioTracks = (stream) => {
+    if (!stream?.getAudioTracks) return;
+    for (const track of stream.getAudioTracks()) {
+      if (track.__vlanyaWindowProcessAudio) continue;
+      try {
+        stream.removeTrack(track);
+      } catch (_) {
+        // Best effort: the stream may already be detached.
+      }
+      try {
+        track.stop();
+      } catch (_) {
+        // Best effort: the browser may already have stopped the track.
+      }
+    }
+  };
+
   const createAudioContext = (sampleRate) => {
     const Context = window.AudioContext || window.webkitAudioContext;
     if (!Context) return null;
@@ -733,20 +750,16 @@
           video: next.video ?? true,
           audio: true,
         });
-        if (!stream.getAudioTracks().length) {
-          const windowAudioTrack = await createWindowProcessAudioTrack();
-          if (windowAudioTrack) {
-            stream.addTrack(windowAudioTrack);
-            for (const videoTrack of stream.getVideoTracks()) {
-              displayAudioByVideoTrack.set(videoTrack, windowAudioTrack);
-              videoTrack.addEventListener("ended", () => windowAudioTrack.stop(), { once: true });
-            }
+        const windowAudioTrack = await createWindowProcessAudioTrack();
+        removeNativeDisplayAudioTracks(stream);
+        if (windowAudioTrack) {
+          stream.addTrack(windowAudioTrack);
+          for (const videoTrack of stream.getVideoTracks()) {
+            displayAudioByVideoTrack.set(videoTrack, windowAudioTrack);
+            videoTrack.addEventListener("ended", () => windowAudioTrack.stop(), { once: true });
           }
         } else {
-          const displayAudioTrack = stream.getAudioTracks()[0];
-          for (const videoTrack of stream.getVideoTracks()) {
-            displayAudioByVideoTrack.set(videoTrack, displayAudioTrack);
-          }
+          setState("screen", "WINDOW AUDIO MIX BLOCKED", "native system audio was removed from screen share");
         }
         return markDisplayAudioTracks(stream);
       };
