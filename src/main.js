@@ -215,9 +215,21 @@ function rememberWindowAudioCapture(source) {
   const windowHandle = getWindowHandleFromSourceId(source.id);
 
   pendingWindowAudioCapture = {
+    captureMode: "include",
     sourceId: source.id,
     sourceName: source.name || "Window",
     windowHandle,
+    expiresAt: Date.now() + 15000,
+  };
+  return true;
+}
+
+function rememberScreenAudioExcludingElement(source) {
+  pendingWindowAudioCapture = {
+    captureMode: "exclude",
+    sourceId: source.id,
+    sourceName: `${source.name || "Screen"} without Element audio`,
+    processId: process.pid,
     expiresAt: Date.now() + 15000,
   };
   return true;
@@ -361,9 +373,8 @@ function configureSession(ses) {
       const isWindowSource = source.id.startsWith("window:");
       const streams = { video: source };
       if (picked.shareAudio && isScreenSource && process.platform === "win32") {
-        streams.audio = "loopback";
-        pendingWindowAudioCapture = null;
-      } else if (isWindowSource && process.platform === "win32") {
+        rememberScreenAudioExcludingElement(source);
+      } else if (picked.shareAudio && isWindowSource && process.platform === "win32") {
         rememberWindowAudioCapture(source);
       } else {
         pendingWindowAudioCapture = null;
@@ -768,7 +779,9 @@ ipcMain.handle("vlanya-window-audio:start", (event) => {
 
   const token = randomUUID();
   const helperArgs = [];
-  if (pending.windowHandle) {
+  if (pending.captureMode === "exclude") {
+    helperArgs.push("--pid", String(pending.processId || process.pid), "--exclude-tree");
+  } else if (pending.windowHandle) {
     helperArgs.push("--hwnd", String(pending.windowHandle));
   }
   if (pending.sourceName) {

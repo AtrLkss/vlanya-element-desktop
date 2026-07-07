@@ -64,7 +64,7 @@ internal static class Program
                 });
             }
 
-            await using var capture = await ProcessLoopbackCapture.CreateAsync(processId, stop.Token);
+            await using var capture = await ProcessLoopbackCapture.CreateAsync(processId, options.ProcessLoopbackMode, stop.Token);
             await using var output = Console.OpenStandardOutput();
             var writer = Channel.CreateUnbounded<byte[]>(new UnboundedChannelOptions
             {
@@ -84,7 +84,7 @@ internal static class Program
             };
 
             var processName = TryGetProcessName(processId);
-            Console.Error.WriteLine($"READY pid={processId} process={processName} sampleRate={OutputSampleRate} channels={OutputChannels}");
+            Console.Error.WriteLine($"READY pid={processId} process={processName} mode={options.ProcessLoopbackMode} sampleRate={OutputSampleRate} channels={OutputChannels}");
 
             capture.Start();
 
@@ -111,6 +111,7 @@ internal static class Program
     {
         Console.Error.WriteLine("Usage: Vlanya.WindowAudioCapture --pid <pid> [--duration-ms <ms>]");
         Console.Error.WriteLine("   or: Vlanya.WindowAudioCapture --hwnd <windowHandle> [--duration-ms <ms>]");
+        Console.Error.WriteLine("       add --exclude-tree to capture everything except the target process tree");
     }
 
     private static int ResolveProcessId(CaptureOptions options)
@@ -217,9 +218,12 @@ internal static class Program
         public event Action<byte[]>? DataAvailable;
         public event Action<Exception?>? Stopped;
 
-        public static async Task<ProcessLoopbackCapture> CreateAsync(int processId, CancellationToken cancellationToken)
+        public static async Task<ProcessLoopbackCapture> CreateAsync(
+            int processId,
+            ProcessLoopbackMode processLoopbackMode,
+            CancellationToken cancellationToken)
         {
-            var audioClient = await ProcessLoopbackActivator.ActivateAsync(processId, cancellationToken);
+            var audioClient = await ProcessLoopbackActivator.ActivateAsync(processId, processLoopbackMode, cancellationToken);
             return new ProcessLoopbackCapture(audioClient);
         }
 
@@ -331,7 +335,10 @@ internal static class Program
         private const string ProcessLoopbackDevice = "VAD\\Process_Loopback";
         private static readonly Guid IAudioClientId = new("1CB9AD4C-DBFA-4c32-B178-C2F568A703B2");
 
-        public static async Task<AudioClient> ActivateAsync(int processId, CancellationToken cancellationToken)
+        public static async Task<AudioClient> ActivateAsync(
+            int processId,
+            ProcessLoopbackMode processLoopbackMode,
+            CancellationToken cancellationToken)
         {
             var activationParams = new AudioClientActivationParams
             {
@@ -339,7 +346,7 @@ internal static class Program
                 ProcessLoopbackParams = new AudioClientProcessLoopbackParams
                 {
                     TargetProcessId = unchecked((uint)processId),
-                    ProcessLoopbackMode = ProcessLoopbackMode.IncludeTargetProcessTree,
+                    ProcessLoopbackMode = processLoopbackMode,
                 },
             };
 
@@ -412,6 +419,7 @@ internal static class Program
         public int? ProcessId { get; private init; }
         public long? WindowHandle { get; private init; }
         public string? WindowTitle { get; private init; }
+        public ProcessLoopbackMode ProcessLoopbackMode { get; private init; }
         public int? DurationMs { get; private init; }
         public bool ShowHelp { get; private init; }
 
@@ -420,6 +428,7 @@ internal static class Program
             int? processId = null;
             long? windowHandle = null;
             string? windowTitle = null;
+            var processLoopbackMode = ProcessLoopbackMode.IncludeTargetProcessTree;
             int? durationMs = null;
             var showHelp = args.Length == 0;
 
@@ -447,6 +456,12 @@ internal static class Program
                     case "--duration-ms":
                         durationMs = int.Parse(Next());
                         break;
+                    case "--exclude-tree":
+                        processLoopbackMode = ProcessLoopbackMode.ExcludeTargetProcessTree;
+                        break;
+                    case "--include-tree":
+                        processLoopbackMode = ProcessLoopbackMode.IncludeTargetProcessTree;
+                        break;
                     case "--help":
                     case "-h":
                     case "/?":
@@ -467,6 +482,7 @@ internal static class Program
                 ProcessId = processId,
                 WindowHandle = windowHandle,
                 WindowTitle = windowTitle,
+                ProcessLoopbackMode = processLoopbackMode,
                 DurationMs = durationMs,
                 ShowHelp = showHelp,
             };
