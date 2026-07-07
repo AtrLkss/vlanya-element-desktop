@@ -479,6 +479,179 @@ function sendPickerSources() {
   });
 }
 
+function safeJsonForScript(value) {
+  return JSON.stringify(value)
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+}
+
+function renderPickerHtml(initialSources, platform) {
+  const initialLiteSources = initialSources.map((source) => ({
+    id: source.id,
+    name: source.name,
+    type: source.type,
+    thumbnail: "",
+  }));
+
+  return `<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>&#1042;&#1099;&#1073;&#1086;&#1088; &#1076;&#1077;&#1084;&#1086;&#1085;&#1089;&#1090;&#1088;&#1072;&#1094;&#1080;&#1080;</title>
+    <style>
+      :root { color-scheme: dark; --bg: #121419; --panel: #1b1e26; --panel-2: #252a34; --line: #333947; --text: #f3f6fb; --muted: #a3adbc; --accent: #45d483; }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: var(--bg); color: var(--text); font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      button, input { font: inherit; }
+      .picker { min-height: 100vh; display: grid; grid-template-rows: auto auto auto auto minmax(0, 1fr); gap: 14px; padding: 18px; }
+      header { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
+      h1, p { margin: 0; }
+      h1 { font-size: 24px; }
+      p { margin-top: 4px; color: var(--muted); }
+      .ghost { height: 40px; padding: 0 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); cursor: pointer; }
+      .ghost:disabled { opacity: 0.55; cursor: default; }
+      .audio-row { height: 44px; display: flex; gap: 10px; align-items: center; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); }
+      .audio-row input { width: 18px; height: 18px; accent-color: var(--accent); }
+      .source-tabs { display: flex; align-items: center; gap: 8px; min-width: 0; }
+      .source-tab { height: 36px; padding: 0 13px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--muted); cursor: pointer; }
+      .source-tab:hover, .source-tab:focus, .source-tab.is-active { border-color: var(--accent); color: var(--text); outline: none; }
+      .source-tab.is-active { background: rgba(69, 212, 131, 0.14); }
+      .source-refresh { margin-left: auto; }
+      .empty-state { padding: 18px; border: 1px dashed var(--line); border-radius: 8px; background: rgba(255, 255, 255, 0.03); color: var(--muted); }
+      .sources { min-height: 0; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); align-content: start; gap: 12px; }
+      .source { min-width: 0; display: grid; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); text-align: left; cursor: pointer; }
+      .source:hover, .source:focus { border-color: var(--accent); background: var(--panel-2); outline: none; }
+      .thumb { width: 100%; aspect-ratio: 16 / 10; object-fit: cover; border-radius: 6px; background: #080a0e; }
+      .source-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 720; }
+      .source-type { color: var(--muted); font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <main class="picker">
+      <header>
+        <div>
+          <h1>&#1063;&#1090;&#1086; &#1087;&#1086;&#1082;&#1072;&#1079;&#1072;&#1090;&#1100;?</h1>
+          <p>&#1057;&#1085;&#1072;&#1095;&#1072;&#1083;&#1072; &#1087;&#1086;&#1082;&#1072;&#1079;&#1072;&#1085;&#1099; &#1086;&#1082;&#1085;&#1072;. &#1045;&#1089;&#1083;&#1080; &#1085;&#1091;&#1078;&#1085;&#1086;&#1075;&#1086; &#1086;&#1082;&#1085;&#1072; &#1085;&#1077;&#1090;, &#1085;&#1072;&#1078;&#1084;&#1080; &#171;&#1054;&#1073;&#1085;&#1086;&#1074;&#1080;&#1090;&#1100;&#187;.</p>
+        </div>
+        <button id="cancelButton" class="ghost" type="button">&#1054;&#1090;&#1084;&#1077;&#1085;&#1072;</button>
+      </header>
+      <label id="audioRow" class="audio-row">
+        <input id="shareAudioInput" type="checkbox" checked />
+        <span>&#1055;&#1077;&#1088;&#1077;&#1076;&#1072;&#1074;&#1072;&#1090;&#1100; &#1079;&#1074;&#1091;&#1082; Windows</span>
+      </label>
+      <nav class="source-tabs" aria-label="type">
+        <button class="source-tab is-active" type="button" data-filter="window">&#1054;&#1082;&#1085;&#1072;</button>
+        <button class="source-tab" type="button" data-filter="screen">&#1069;&#1082;&#1088;&#1072;&#1085;&#1099;</button>
+        <button class="source-tab" type="button" data-filter="all">&#1042;&#1089;&#1077;</button>
+        <button id="refreshButton" class="ghost source-refresh" type="button">&#1054;&#1073;&#1085;&#1086;&#1074;&#1080;&#1090;&#1100;</button>
+      </nav>
+      <div id="emptyState" class="empty-state" hidden></div>
+      <section id="sourcesList" class="sources"></section>
+    </main>
+    <template id="sourceTemplate">
+      <button class="source" type="button">
+        <img class="thumb" alt="" />
+        <span class="source-title"></span>
+        <span class="source-type"></span>
+      </button>
+    </template>
+    <script>
+      (() => {
+        const initialSources = ${safeJsonForScript(initialLiteSources)};
+        const initialPlatform = ${safeJsonForScript(platform)};
+        const labels = {
+          window: "\\u041e\\u043a\\u043d\\u0430",
+          screen: "\\u042d\\u043a\\u0440\\u0430\\u043d\\u044b",
+          all: "\\u0412\\u0441\\u0435",
+          sourceWindow: "\\u041e\\u043a\\u043d\\u043e",
+          sourceScreen: "\\u042d\\u043a\\u0440\\u0430\\u043d",
+          noWindows: "\\u041e\\u043a\\u043d\\u0430 \\u043d\\u0435 \\u043d\\u0430\\u0439\\u0434\\u0435\\u043d\\u044b. \\u0420\\u0430\\u0437\\u0432\\u0435\\u0440\\u043d\\u0438 \\u043d\\u0443\\u0436\\u043d\\u043e\\u0435 \\u043e\\u043a\\u043d\\u043e, \\u0443\\u0431\\u0435\\u0440\\u0438 \\u0435\\u0433\\u043e \\u0438\\u0437 \\u0442\\u0440\\u0435\\u044f \\u0438 \\u043d\\u0430\\u0436\\u043c\\u0438 \\u00ab\\u041e\\u0431\\u043d\\u043e\\u0432\\u0438\\u0442\\u044c\\u00bb.",
+          noScreens: "\\u042d\\u043a\\u0440\\u0430\\u043d\\u044b \\u043d\\u0435 \\u043d\\u0430\\u0439\\u0434\\u0435\\u043d\\u044b. \\u041f\\u043e\\u043f\\u0440\\u043e\\u0431\\u0443\\u0439 \\u043d\\u0430\\u0436\\u0430\\u0442\\u044c \\u00ab\\u041e\\u0431\\u043d\\u043e\\u0432\\u0438\\u0442\\u044c\\u00bb.",
+          noSources: "\\u041d\\u0435\\u0442 \\u0438\\u0441\\u0442\\u043e\\u0447\\u043d\\u0438\\u043a\\u043e\\u0432 \\u0434\\u043b\\u044f \\u0434\\u0435\\u043c\\u043e\\u043d\\u0441\\u0442\\u0440\\u0430\\u0446\\u0438\\u0438. \\u041f\\u043e\\u043f\\u0440\\u043e\\u0431\\u0443\\u0439 \\u043d\\u0430\\u0436\\u0430\\u0442\\u044c \\u00ab\\u041e\\u0431\\u043d\\u043e\\u0432\\u0438\\u0442\\u044c\\u00bb.",
+          nonWindowsAudio: "\\u0421\\u0438\\u0441\\u0442\\u0435\\u043c\\u043d\\u044b\\u0439 \\u0437\\u0432\\u0443\\u043a \\u0434\\u043e\\u0441\\u0442\\u0443\\u043f\\u0435\\u043d \\u0442\\u043e\\u043b\\u044c\\u043a\\u043e \\u043d\\u0430 Windows",
+        };
+        const list = document.getElementById("sourcesList");
+        const template = document.getElementById("sourceTemplate");
+        const shareAudioInput = document.getElementById("shareAudioInput");
+        const audioRow = document.getElementById("audioRow");
+        const cancelButton = document.getElementById("cancelButton");
+        const refreshButton = document.getElementById("refreshButton");
+        const emptyState = document.getElementById("emptyState");
+        const tabs = Array.from(document.querySelectorAll(".source-tab"));
+        let allSources = Array.isArray(initialSources) ? initialSources : [];
+        let platformName = initialPlatform;
+        let activeFilter = "window";
+
+        const bridge = window.vlanyaPicker;
+        cancelButton.addEventListener("click", () => bridge?.cancel?.());
+        const filterSources = () => activeFilter === "all" ? allSources : allSources.filter((source) => source.type === activeFilter);
+        const updateTabs = () => {
+          const counts = {
+            window: allSources.filter((source) => source.type === "window").length,
+            screen: allSources.filter((source) => source.type === "screen").length,
+            all: allSources.length,
+          };
+          for (const tab of tabs) {
+            const filter = tab.dataset.filter;
+            tab.classList.toggle("is-active", filter === activeFilter);
+            tab.textContent = labels[filter] + " " + (counts[filter] || 0);
+          }
+        };
+        const updateEmptyState = (sources) => {
+          emptyState.hidden = Boolean(sources.length);
+          emptyState.textContent = sources.length ? "" : activeFilter === "window" ? labels.noWindows : activeFilter === "screen" ? labels.noScreens : labels.noSources;
+        };
+        const renderSources = () => {
+          const sources = filterSources();
+          list.innerHTML = "";
+          updateTabs();
+          updateEmptyState(sources);
+          for (const source of sources) {
+            const node = template.content.firstElementChild.cloneNode(true);
+            const image = node.querySelector(".thumb");
+            if (source.thumbnail) image.src = source.thumbnail;
+            else image.removeAttribute("src");
+            node.querySelector(".source-title").textContent = source.name || source.id;
+            node.querySelector(".source-type").textContent = source.type === "screen" ? labels.sourceScreen : labels.sourceWindow;
+            node.addEventListener("click", () => {
+              const canShareAudio = platformName === "win32";
+              bridge?.choose?.({ sourceId: source.id, shareAudio: canShareAudio && shareAudioInput.checked });
+            });
+            list.append(node);
+          }
+        };
+        for (const tab of tabs) {
+          tab.addEventListener("click", () => {
+            activeFilter = tab.dataset.filter || "window";
+            renderSources();
+          });
+        }
+        refreshButton.addEventListener("click", async () => {
+          refreshButton.disabled = true;
+          try { await bridge?.refresh?.(); }
+          finally { refreshButton.disabled = false; }
+        });
+        bridge?.onSources?.(({ sources, platform }) => {
+          allSources = Array.isArray(sources) ? sources : [];
+          platformName = platform;
+          if (platform !== "win32") {
+            shareAudioInput.checked = false;
+            shareAudioInput.disabled = true;
+            audioRow.querySelector("span").textContent = labels.nonWindowsAudio;
+          }
+          renderSources();
+        });
+        renderSources();
+      })();
+    </script>
+  </body>
+</html>`;
+}
+
 function showPicker(sources, requestInfo) {
   if (pickerWindow) {
     pickerWindow.close();
@@ -512,8 +685,24 @@ function showPicker(sources, requestInfo) {
     });
 
     pickerWindow.removeMenu();
-    pickerWindow.loadFile(path.join(__dirname, "picker.html"));
-    pickerWindow.webContents.once("did-finish-load", sendPickerSources);
+    pickerWindow.webContents.on("did-fail-load", (_event, code, description, url) => {
+      console.warn("picker failed to load:", code, description, url);
+    });
+    pickerWindow.webContents.on("render-process-gone", (_event, details) => {
+      console.warn("picker renderer gone:", details);
+    });
+    pickerWindow.webContents.on("console-message", (_event, level, message, line, sourceId) => {
+      if (level >= 2) console.warn(`picker console: ${message} (${sourceId}:${line})`);
+    });
+    pickerWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(renderPickerHtml(currentSources, process.platform))}`);
+    pickerWindow.webContents.once("did-finish-load", () => {
+      sendPickerSources();
+      pickerWindow?.webContents.executeJavaScript("document.body && document.body.innerText ? document.body.innerText.slice(0, 120) : ''", true)
+        .then((text) => {
+          if (!text || !text.trim()) console.warn("picker loaded but body text is empty");
+        })
+        .catch((error) => console.warn("picker body check failed:", error?.message || error));
+    });
     pickerWindow.on("closed", () => {
       pickerWindow = null;
       currentSources = [];
