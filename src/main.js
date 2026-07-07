@@ -41,6 +41,7 @@ let tray = null;
 let isQuitting = false;
 let currentPickerResolve = null;
 let currentSources = [];
+let currentPickerRequestInfo = null;
 let pendingWindowAudioCapture = null;
 const activeWindowAudioCaptures = new Map();
 const configuredWebContents = new WeakSet();
@@ -229,6 +230,23 @@ function consumePendingWindowAudioCapture() {
   return pending;
 }
 
+function sortDisplaySources(sources) {
+  return sources.slice().sort((a, b) => {
+    const aScreen = a.id.startsWith("screen:");
+    const bScreen = b.id.startsWith("screen:");
+    if (aScreen !== bScreen) return aScreen ? 1 : -1;
+    return (a.name || "").localeCompare(b.name || "");
+  });
+}
+
+async function enumerateDisplaySources() {
+  return desktopCapturer.getSources({
+    types: ["window", "screen"],
+    thumbnailSize: { width: 420, height: 260 },
+    fetchWindowIcons: true,
+  });
+}
+
 function configureAppWebContents(contents) {
   if (!contents || configuredWebContents.has(contents)) return;
   configuredWebContents.add(contents);
@@ -321,11 +339,7 @@ function configureSession(ses) {
     }
 
     try {
-      const sources = await desktopCapturer.getSources({
-        types: ["screen", "window"],
-        thumbnailSize: { width: 360, height: 220 },
-        fetchWindowIcons: true,
-      });
+      const sources = await enumerateDisplaySources();
 
       const picked = await showPicker(sources, {
         audioRequested: request.audioRequested,
@@ -451,6 +465,20 @@ function sourceToView(source) {
   };
 }
 
+function setCurrentDisplaySources(sources) {
+  currentSources = sortDisplaySources(sources).map(sourceToView);
+  return currentSources;
+}
+
+function sendPickerSources() {
+  if (!pickerWindow || pickerWindow.isDestroyed()) return;
+  pickerWindow.webContents.send("display-sources", {
+    sources: currentSources,
+    platform: process.platform,
+    requestInfo: currentPickerRequestInfo,
+  });
+}
+
 function showPicker(sources, requestInfo) {
   if (pickerWindow) {
     pickerWindow.close();
@@ -461,15 +489,8 @@ function showPicker(sources, requestInfo) {
     currentPickerResolve = null;
   }
 
-  currentSources = sources
-    .slice()
-    .sort((a, b) => {
-      const aScreen = a.id.startsWith("screen:");
-      const bScreen = b.id.startsWith("screen:");
-      if (aScreen !== bScreen) return aScreen ? -1 : 1;
-      return (a.name || "").localeCompare(b.name || "");
-    })
-    .map(sourceToView);
+  currentPickerRequestInfo = requestInfo;
+  setCurrentDisplaySources(sources);
 
   return new Promise((resolve) => {
     currentPickerResolve = resolve;
@@ -492,16 +513,11 @@ function showPicker(sources, requestInfo) {
 
     pickerWindow.removeMenu();
     pickerWindow.loadFile(path.join(__dirname, "picker.html"));
-    pickerWindow.webContents.once("did-finish-load", () => {
-      pickerWindow?.webContents.send("display-sources", {
-        sources: currentSources,
-        platform: process.platform,
-        requestInfo,
-      });
-    });
+    pickerWindow.webContents.once("did-finish-load", sendPickerSources);
     pickerWindow.on("closed", () => {
       pickerWindow = null;
       currentSources = [];
+      currentPickerRequestInfo = null;
       if (currentPickerResolve) {
         currentPickerResolve(null);
         currentPickerResolve = null;
@@ -513,6 +529,7 @@ function showPicker(sources, requestInfo) {
 ipcMain.handle("picker:choose", (_event, selection) => {
   const resolve = currentPickerResolve;
   currentPickerResolve = null;
+  currentPickerRequestInfo = null;
   if (pickerWindow) {
     pickerWindow.close();
     pickerWindow = null;
@@ -523,11 +540,24 @@ ipcMain.handle("picker:choose", (_event, selection) => {
 ipcMain.handle("picker:cancel", () => {
   const resolve = currentPickerResolve;
   currentPickerResolve = null;
+  currentPickerRequestInfo = null;
   if (pickerWindow) {
     pickerWindow.close();
     pickerWindow = null;
   }
   if (resolve) resolve(null);
+});
+
+ipcMain.handle("picker:refresh", async () => {
+  if (!pickerWindow || pickerWindow.isDestroyed()) return { ok: false, error: "picker-closed" };
+  try {
+    const sources = await enumerateDisplaySources();
+    setCurrentDisplaySources(sources);
+    sendPickerSources();
+    return { ok: true, count: currentSources.length };
+  } catch (error) {
+    return { ok: false, error: error?.message || String(error) };
+  }
 });
 
 ipcMain.handle("vlanya-window-audio:start", (event) => {

@@ -1073,6 +1073,31 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
     return stream;
   };
 
+  const stopDisplayAudioWhenVideoEnds = (stream) => {
+    if (!stream?.getAudioTracks || !stream?.getVideoTracks) return;
+    const audioTracks = stream.getAudioTracks();
+    if (!audioTracks.length) return;
+
+    const stopIfNoLiveVideo = () => {
+      const hasLiveVideo = stream.getVideoTracks().some((track) => track.readyState === "live");
+      if (hasLiveVideo) return;
+      for (const track of audioTracks) {
+        try {
+          if (track.readyState === "live") track.stop();
+        } catch (_) {
+          // Track may already be stopped.
+        }
+      }
+    };
+
+    for (const videoTrack of stream.getVideoTracks()) {
+      videoTrack.addEventListener("ended", stopIfNoLiveVideo, { once: true });
+    }
+    stream.addEventListener?.("removetrack", (event) => {
+      if (event.track?.kind === "video") window.setTimeout(stopIfNoLiveVideo, 0);
+    });
+  };
+
   const shouldProcessOutgoingAudioTrack = (track) =>
     Boolean(track && track.kind === "audio" && !track.__vlanyaNoiseSuppressed && !track.__vlanyaDisplayAudio);
 
@@ -1292,6 +1317,7 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
           video: next.video ?? true,
           audio: true,
         });
+        stopDisplayAudioWhenVideoEnds(stream);
         return markDisplayAudioTracks(stream);
       };
     }

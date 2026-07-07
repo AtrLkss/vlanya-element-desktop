@@ -150,6 +150,7 @@
   const activePeerConnections = new Set();
   const displayAudioByVideoTrack = new WeakMap();
   const displayAudioSendersByPeerConnection = new WeakMap();
+  const displayAudioEntriesByPeerConnection = new WeakMap();
   const peerConnectionBySender = new WeakMap();
   const processedTracks = new WeakMap();
   let addDisplayAudioForVideoTrackToPeer = null;
@@ -393,6 +394,8 @@
       nativePeerConnectionPrototype || (window.RTCPeerConnection || window.webkitRTCPeerConnection)?.prototype;
     if (peerConnectionPrototype && !peerConnectionPrototype.__vlanyaInjectedSenderPatched) {
       const originalAddTrack = peerConnectionPrototype.addTrack;
+      const originalRemoveTrack = peerConnectionPrototype.removeTrack;
+      const originalClose = peerConnectionPrototype.close;
       const getDisplayAudioSenderMap = (pc) => {
         let senderMap = displayAudioSendersByPeerConnection.get(pc);
         if (!senderMap) {
@@ -401,10 +404,55 @@
         }
         return senderMap;
       };
-      const rememberDisplayAudioSender = (pc, track, sender) => {
+      const getDisplayAudioEntries = (pc) => {
+        let entries = displayAudioEntriesByPeerConnection.get(pc);
+        if (!entries) {
+          entries = new Set();
+          displayAudioEntriesByPeerConnection.set(pc, entries);
+        }
+        return entries;
+      };
+      const cleanupDisplayAudioEntry = (pc, entry, reason = "cleanup") => {
+        if (!pc || !entry) return;
+        const entries = displayAudioEntriesByPeerConnection.get(pc);
+        entries?.delete(entry);
+        displayAudioSendersByPeerConnection.get(pc)?.delete(entry.audioTrack);
+
+        try {
+          pc.removeTrack?.(entry.sender);
+        } catch (_) {
+          // The sender may already be removed or the peer connection may be closing.
+        }
+        try {
+          entry.sender?.replaceTrack?.(null);
+        } catch (_) {
+          // Best effort: some senders reject replaceTrack(null) after removeTrack().
+        }
+        try {
+          if (entry.audioTrack?.readyState === "live") entry.audioTrack.stop();
+        } catch (_) {
+          // The track may already be stopped.
+        }
+        setState("screen", "WINDOW AUDIO PEER DETACHED", reason);
+      };
+      const cleanupDisplayAudioForPeer = (pc, videoTrack = null, reason = "cleanup") => {
+        const entries = displayAudioEntriesByPeerConnection.get(pc);
+        if (!entries) return;
+        for (const entry of Array.from(entries)) {
+          if (videoTrack && entry.videoTrack !== videoTrack) continue;
+          cleanupDisplayAudioEntry(pc, entry, reason);
+        }
+      };
+      const rememberDisplayAudioSender = (pc, track, sender, videoTrack = null) => {
         if (!pc || !track || !sender) return sender;
         getDisplayAudioSenderMap(pc).set(track, sender);
+        const entry = { audioTrack: track, sender, videoTrack };
+        getDisplayAudioEntries(pc).add(entry);
         peerConnectionBySender.set(sender, pc);
+        track.addEventListener("ended", () => cleanupDisplayAudioEntry(pc, entry, "audio track ended"), { once: true });
+        if (videoTrack) {
+          videoTrack.addEventListener("ended", () => cleanupDisplayAudioEntry(pc, entry, "video track ended"), { once: true });
+        }
         return sender;
       };
       const getDisplayAudioSender = (pc, track) => {
@@ -420,7 +468,7 @@
 
         try {
           const sender = originalAddTrack.call(pc, audioTrack, ...streams);
-          rememberDisplayAudioSender(pc, audioTrack, sender);
+          rememberDisplayAudioSender(pc, audioTrack, sender, videoTrack);
           setState("screen", "WINDOW AUDIO PEER ATTACHED", formatTrack(audioTrack));
           return sender;
         } catch (error) {
@@ -496,6 +544,23 @@
       }
 
       addDisplayAudioForVideoTrackToPeer = addDisplayAudioForVideoTrack;
+      if (typeof originalRemoveTrack === "function" && !peerConnectionPrototype.__vlanyaInjectedRemoveTrackPatched) {
+        peerConnectionPrototype.removeTrack = function injectedRemoveTrack(sender) {
+          activePeerConnections.add(this);
+          if (sender?.track?.kind === "video") {
+            cleanupDisplayAudioForPeer(this, sender.track, "video sender removed");
+          }
+          return originalRemoveTrack.call(this, sender);
+        };
+        Object.defineProperty(peerConnectionPrototype, "__vlanyaInjectedRemoveTrackPatched", { value: true });
+      }
+      if (typeof originalClose === "function" && !peerConnectionPrototype.__vlanyaInjectedClosePatched) {
+        peerConnectionPrototype.close = function injectedClose() {
+          cleanupDisplayAudioForPeer(this, null, "peer connection closed");
+          return originalClose.call(this);
+        };
+        Object.defineProperty(peerConnectionPrototype, "__vlanyaInjectedClosePatched", { value: true });
+      }
       Object.defineProperty(peerConnectionPrototype, "__vlanyaInjectedSenderPatched", { value: true });
     }
 
@@ -504,8 +569,15 @@
       const originalReplaceTrack = Sender.prototype.replaceTrack;
       if (typeof originalReplaceTrack === "function") {
         Sender.prototype.replaceTrack = function injectedReplaceTrack(track) {
+          const pc = peerConnectionBySender.get(this);
+          const previousTrack = this.track;
+          if (previousTrack?.kind === "video" && previousTrack !== track && pc) {
+            cleanupDisplayAudioForPeer(pc, previousTrack, track ? "video sender replaced" : "video sender cleared");
+          }
+          if (track === null && pc) {
+            cleanupDisplayAudioForPeer(pc, null, "sender cleared");
+          }
           if (track?.kind === "video") {
-            const pc = peerConnectionBySender.get(this);
             if (pc && typeof addDisplayAudioForVideoTrackToPeer === "function") {
               addDisplayAudioForVideoTrackToPeer(pc, track, []);
             } else if (displayAudioByVideoTrack.get(track)) {
@@ -535,6 +607,26 @@
       }
     }
     return stream;
+  };
+
+  const stopAudioWhenDisplayVideoEnds = (stream, audioTrack) => {
+    if (!stream || !audioTrack) return;
+    const stopIfNoLiveVideo = () => {
+      const hasLiveVideo = stream.getVideoTracks?.().some((track) => track.readyState === "live");
+      if (hasLiveVideo) return;
+      try {
+        if (audioTrack.readyState === "live") audioTrack.stop();
+      } catch (_) {
+        // Track may already be stopped.
+      }
+    };
+
+    for (const videoTrack of stream.getVideoTracks?.() || []) {
+      videoTrack.addEventListener("ended", stopIfNoLiveVideo, { once: true });
+    }
+    stream.addEventListener?.("removetrack", (event) => {
+      if (event.track?.kind === "video") window.setTimeout(stopIfNoLiveVideo, 0);
+    });
   };
 
   const createAudioContext = (sampleRate) => {
@@ -737,6 +829,7 @@
           const windowAudioTrack = await createWindowProcessAudioTrack();
           if (windowAudioTrack) {
             stream.addTrack(windowAudioTrack);
+            stopAudioWhenDisplayVideoEnds(stream, windowAudioTrack);
             for (const videoTrack of stream.getVideoTracks()) {
               displayAudioByVideoTrack.set(videoTrack, windowAudioTrack);
               videoTrack.addEventListener("ended", () => windowAudioTrack.stop(), { once: true });
@@ -744,6 +837,7 @@
           }
         } else {
           const displayAudioTrack = stream.getAudioTracks()[0];
+          stopAudioWhenDisplayVideoEnds(stream, displayAudioTrack);
           for (const videoTrack of stream.getVideoTracks()) {
             displayAudioByVideoTrack.set(videoTrack, displayAudioTrack);
           }

@@ -21,6 +21,14 @@
         <span>Передавать звук Windows</span>
       </label>
 
+      <nav class="source-tabs" aria-label="РўРёРї РёСЃС‚РѕС‡РЅРёРєР°">
+        <button class="source-tab is-active" type="button" data-filter="window">РћРєРЅР°</button>
+        <button class="source-tab" type="button" data-filter="screen">Р­РєСЂР°РЅС‹</button>
+        <button class="source-tab" type="button" data-filter="all">Р’СЃРµ</button>
+        <button id="refreshButton" class="ghost source-refresh" type="button">РћР±РЅРѕРІРёС‚СЊ</button>
+      </nav>
+
+      <div id="emptyState" class="empty-state" hidden></div>
       <section id="sourcesList" class="sources"></section>
     </main>
 

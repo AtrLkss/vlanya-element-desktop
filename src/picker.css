@@ -82,6 +82,47 @@ p {
   accent-color: var(--accent);
 }
 
+.source-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.source-tab {
+  height: 36px;
+  padding: 0 13px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.source-tab:hover,
+.source-tab:focus,
+.source-tab.is-active {
+  border-color: var(--accent);
+  color: var(--text);
+  outline: none;
+}
+
+.source-tab.is-active {
+  background: rgba(69, 212, 131, 0.14);
+}
+
+.source-refresh {
+  margin-left: auto;
+}
+
+.empty-state {
+  padding: 18px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--muted);
+}
+
 .sources {
   min-height: 0;
   overflow: auto;
