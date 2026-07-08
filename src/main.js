@@ -7,6 +7,7 @@ const {
   BrowserWindow,
   Menu,
   desktopCapturer,
+  dialog,
   ipcMain,
   nativeImage,
   shell,
@@ -14,6 +15,13 @@ const {
   Tray,
   webFrameMain,
 } = require("electron");
+
+let autoUpdater = null;
+try {
+  ({ autoUpdater } = require("electron-updater"));
+} catch (error) {
+  console.warn("electron-updater is unavailable:", error?.message || error);
+}
 
 const CHAT_URL = "https://chat.vlanya.ru";
 const PRELOAD_PATH = path.join(__dirname, "preload.js");
@@ -49,6 +57,15 @@ const activeWindowAudioCaptures = new Map();
 const configuredWebContents = new WeakSet();
 let frameAudioPatchSource = null;
 let rnnoiseBrowserBundleSource = null;
+let updateCheckInFlight = null;
+let updateReadyToInstall = false;
+let updateDownloadedVersion = null;
+let updateDownloadedDialogOpen = false;
+let manualUpdateCheckPending = false;
+
+const UPDATE_CHECK_DELAY_MS = 10000;
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const UPDATE_RELEASES_URL = "https://github.com/AtrLkss/vlanya-element-desktop/releases/latest";
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
@@ -99,6 +116,185 @@ function getAppIconPath() {
 function createAppIconImage() {
   const image = nativeImage.createFromPath(getAppIconPath());
   return image.isEmpty() ? null : image;
+}
+
+function isPortableBuild() {
+  return Boolean(
+    process.env.PORTABLE_EXECUTABLE_DIR ||
+      process.env.PORTABLE_EXECUTABLE_FILE ||
+      process.env.PORTABLE_EXECUTABLE_APP_FILENAME,
+  );
+}
+
+function canUseAutoUpdater() {
+  if (!autoUpdater || !app.isPackaged || process.platform !== "win32" || isPortableBuild()) return false;
+  return fs.existsSync(path.join(process.resourcesPath, "app-update.yml"));
+}
+
+function getDialogParent() {
+  return mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
+}
+
+async function showUpdateMessage(options) {
+  try {
+    const parent = getDialogParent();
+    return parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options);
+  } catch (error) {
+    console.warn("failed to show update dialog:", error?.message || error);
+    return { response: options?.cancelId || 0 };
+  }
+}
+
+async function showManualUpdateFallback() {
+  const result = await showUpdateMessage({
+    type: "info",
+    title: "Vlanya Element",
+    message: "\u0410\u0432\u0442\u043e\u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u0435 \u0440\u0430\u0431\u043e\u0442\u0430\u0435\u0442 \u0432 \u0443\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d\u043d\u043e\u0439 \u0432\u0435\u0440\u0441\u0438\u0438 Vlanya.",
+    detail: "\u0415\u0441\u043b\u0438 \u0442\u044b \u0437\u0430\u043f\u0443\u0441\u0442\u0438\u043b portable .exe, \u0441\u043a\u0430\u0447\u0430\u0439 Setup-\u0443\u0441\u0442\u0430\u043d\u043e\u0432\u0449\u0438\u043a \u0438\u0437 GitHub Release. \u041f\u043e\u0441\u043b\u0435 \u044d\u0442\u043e\u0433\u043e Vlanya \u0441\u043c\u043e\u0436\u0435\u0442 \u0441\u0430\u043c\u0430 \u043e\u0431\u043d\u043e\u0432\u043b\u044f\u0442\u044c\u0441\u044f.",
+    buttons: ["\u041e\u0442\u043a\u0440\u044b\u0442\u044c Release", "OK"],
+    defaultId: 0,
+    cancelId: 1,
+  });
+  if (result.response === 0) shell.openExternal(UPDATE_RELEASES_URL);
+}
+
+async function promptInstallDownloadedUpdate() {
+  if (!updateReadyToInstall || updateDownloadedDialogOpen) return;
+  updateDownloadedDialogOpen = true;
+  const versionText = updateDownloadedVersion ? ` ${updateDownloadedVersion}` : "";
+  const result = await showUpdateMessage({
+    type: "info",
+    title: "\u041e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u0435 Vlanya",
+    message: `Vlanya Element${versionText} \u0441\u043a\u0430\u0447\u0430\u043d\u0430 \u0438 \u0433\u043e\u0442\u043e\u0432\u0430 \u043a \u0443\u0441\u0442\u0430\u043d\u043e\u0432\u043a\u0435.`,
+    detail: "\u041f\u0435\u0440\u0435\u0437\u0430\u043f\u0443\u0441\u0442\u0438 Vlanya, \u0447\u0442\u043e\u0431\u044b \u043f\u043e\u0441\u0442\u0430\u0432\u0438\u0442\u044c \u043d\u043e\u0432\u0443\u044e \u0432\u0435\u0440\u0441\u0438\u044e. \u041c\u043e\u0436\u043d\u043e \u0441\u0434\u0435\u043b\u0430\u0442\u044c \u044d\u0442\u043e \u043f\u043e\u0437\u0436\u0435: \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u0435 \u043f\u043e\u0441\u0442\u0430\u0432\u0438\u0442\u0441\u044f \u043f\u0440\u0438 \u0432\u044b\u0445\u043e\u0434\u0435.",
+    buttons: ["\u041f\u0435\u0440\u0435\u0437\u0430\u043f\u0443\u0441\u0442\u0438\u0442\u044c", "\u041f\u043e\u0437\u0436\u0435"],
+    defaultId: 0,
+    cancelId: 1,
+  });
+  updateDownloadedDialogOpen = false;
+  if (result.response === 0) installDownloadedUpdate();
+}
+
+async function checkForUpdates({ manual = false } = {}) {
+  if (!canUseAutoUpdater()) {
+    if (manual) await showManualUpdateFallback();
+    return null;
+  }
+
+  if (updateReadyToInstall) {
+    if (manual) await promptInstallDownloadedUpdate();
+    return null;
+  }
+
+  if (updateCheckInFlight) {
+    if (manual) {
+      manualUpdateCheckPending = true;
+      await showUpdateMessage({
+        type: "info",
+        title: "Vlanya Element",
+        message: "\u0423\u0436\u0435 \u043f\u0440\u043e\u0432\u0435\u0440\u044f\u044e \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u044f.",
+        buttons: ["OK"],
+      });
+    }
+    return updateCheckInFlight;
+  }
+
+  manualUpdateCheckPending = manual;
+  updateCheckInFlight = autoUpdater.checkForUpdates().catch(async (error) => {
+    console.warn("update check failed:", error?.message || error);
+    if (manualUpdateCheckPending) {
+      await showUpdateMessage({
+        type: "warning",
+        title: "\u041e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u044f Vlanya",
+        message: "\u041d\u0435 \u0441\u043c\u043e\u0433\u043b\u0430 \u043f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u044f.",
+        detail: error?.message || String(error),
+        buttons: ["OK"],
+      });
+    }
+  }).finally(() => {
+    updateCheckInFlight = null;
+  });
+
+  return updateCheckInFlight;
+}
+
+function installDownloadedUpdate() {
+  if (!autoUpdater || !updateReadyToInstall) {
+    showUpdateMessage({
+      type: "info",
+      title: "Vlanya Element",
+      message: "\u0413\u043e\u0442\u043e\u0432\u043e\u0433\u043e \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u044f \u043f\u043e\u043a\u0430 \u043d\u0435\u0442.",
+      buttons: ["OK"],
+    });
+    return;
+  }
+
+  isQuitting = true;
+  setImmediate(() => autoUpdater.quitAndInstall(false, true));
+}
+
+function configureAutoUpdater() {
+  if (!autoUpdater) return;
+
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.allowPrerelease = false;
+  autoUpdater.logger = {
+    info: (...args) => console.info("[auto-update]", ...args),
+    warn: (...args) => console.warn("[auto-update]", ...args),
+    error: (...args) => console.error("[auto-update]", ...args),
+    debug: (...args) => console.debug("[auto-update]", ...args),
+  };
+
+  autoUpdater.on("update-available", async (info) => {
+    updateDownloadedVersion = info?.version || null;
+    if (manualUpdateCheckPending) {
+      await showUpdateMessage({
+        type: "info",
+        title: "\u041e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u044f Vlanya",
+        message: "\u041d\u0430\u0448\u043b\u0430 \u043d\u043e\u0432\u0443\u044e \u0432\u0435\u0440\u0441\u0438\u044e. \u0421\u043a\u0430\u0447\u0438\u0432\u0430\u044e \u0435\u0435 \u0432 \u0444\u043e\u043d\u0435.",
+        buttons: ["OK"],
+      });
+    }
+  });
+
+  autoUpdater.on("update-not-available", async () => {
+    if (manualUpdateCheckPending) {
+      await showUpdateMessage({
+        type: "info",
+        title: "\u041e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u044f Vlanya",
+        message: "\u0423 \u0442\u0435\u0431\u044f \u0443\u0436\u0435 \u0441\u0430\u043c\u0430\u044f \u0441\u0432\u0435\u0436\u0430\u044f \u0432\u0435\u0440\u0441\u0438\u044f.",
+        buttons: ["OK"],
+      });
+    }
+    manualUpdateCheckPending = false;
+  });
+
+  autoUpdater.on("update-downloaded", (info) => {
+    updateReadyToInstall = true;
+    updateDownloadedVersion = info?.version || updateDownloadedVersion;
+    manualUpdateCheckPending = false;
+    promptInstallDownloadedUpdate();
+  });
+
+  autoUpdater.on("error", async (error) => {
+    console.warn("auto-updater error:", error?.message || error);
+    if (manualUpdateCheckPending) {
+      await showUpdateMessage({
+        type: "warning",
+        title: "\u041e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u044f Vlanya",
+        message: "\u041d\u0435 \u0441\u043c\u043e\u0433\u043b\u0430 \u043f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u044f.",
+        detail: error?.message || String(error),
+        buttons: ["OK"],
+      });
+      manualUpdateCheckPending = false;
+    }
+  });
+
+  if (canUseAutoUpdater()) {
+    setTimeout(() => checkForUpdates(), UPDATE_CHECK_DELAY_MS);
+    setInterval(() => checkForUpdates(), UPDATE_CHECK_INTERVAL_MS);
+  }
 }
 
 function getRnnoiseBrowserBundleSource() {
@@ -892,6 +1088,14 @@ function buildMenu() {
       submenu: [
         { label: "Обновить", accelerator: "Ctrl+R", click: () => mainWindow?.reload() },
         {
+          label: "\u041f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u044f",
+          click: () => checkForUpdates({ manual: true }),
+        },
+        {
+          label: "\u0423\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u044c \u0441\u043a\u0430\u0447\u0430\u043d\u043d\u043e\u0435 \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u0435",
+          click: installDownloadedUpdate,
+        },
+        {
           label: "DevTools",
           accelerator: "Ctrl+Shift+I",
           click: () => mainWindow?.webContents.toggleDevTools(),
@@ -912,6 +1116,7 @@ app.whenReady().then(() => {
   Menu.setApplicationMenu(buildMenu());
   createTray();
   createMainWindow();
+  configureAutoUpdater();
   app.on("activate", () => {
     showMainWindow();
   });

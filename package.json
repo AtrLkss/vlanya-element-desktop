@@ -1,6 +1,6 @@
 {
   "name": "vlanya-element-desktop",
-  "version": "0.1.37",
+  "version": "0.1.38",
   "private": true,
   "description": "Vlanya Element desktop wrapper with Windows screen-share audio loopback.",
   "author": "Vlanya",
@@ -10,7 +10,7 @@
     "start": "electron .",
     "build:window-audio-helper": "dotnet publish native/window-audio-capture/Vlanya.WindowAudioCapture.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o native/window-audio-capture/publish",
     "check": "node --check src/main.js && node --check src/preload.js && node --check src/frame-audio-patch.js && node --check src/picker-preload.js && node --check src/picker.js",
-    "pack": "npm run build:window-audio-helper && electron-builder --win portable --x64"
+    "pack": "npm run build:window-audio-helper && electron-builder --win --x64"
   },
   "devDependencies": {
     "electron": "^39.2.7",
@@ -22,9 +22,16 @@
     "directories": {
       "output": "dist"
     },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "AtrLkss",
+        "repo": "vlanya-element-desktop"
+      }
+    ],
     "files": [
       "src/**/*",
-      "node_modules/@shiguredo/rnnoise-wasm/**/*",
+      "node_modules/**/*",
       "package.json"
     ],
     "extraResources": [
@@ -42,15 +49,28 @@
     ],
     "win": {
       "icon": "build/icon.ico",
+      "verifyUpdateCodeSignature": false,
       "target": [
+        "nsis",
         "portable"
       ]
+    },
+    "nsis": {
+      "artifactName": "Vlanya-Element-Windows-Setup-${version}.${ext}",
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Vlanya Element"
     },
     "portable": {
       "artifactName": "Vlanya-Element-Windows-${version}-portable.exe"
     }
   },
   "dependencies": {
-    "@shiguredo/rnnoise-wasm": "^2025.1.5"
+    "@shiguredo/rnnoise-wasm": "^2025.1.5",
+    "electron-updater": "^6.8.9"
   }
 }

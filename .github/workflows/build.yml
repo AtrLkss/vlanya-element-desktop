@@ -13,8 +13,8 @@ permissions:
   contents: write
 
 jobs:
-  windows-portable:
-    name: Windows portable
+  windows:
+    name: Windows installer
     runs-on: windows-latest
     timeout-minutes: 45
 
@@ -39,14 +39,18 @@ jobs:
       - name: Check JavaScript
         run: npm run check
 
-      - name: Build portable EXE
+      - name: Build Windows release files
         run: npm run pack
 
-      - name: Upload portable EXE
+      - name: Upload Windows release files
         uses: actions/upload-artifact@v4
         with:
-          name: Vlanya-Element-portable
-          path: dist/Vlanya-Element-*-portable.exe
+          name: Vlanya-Element-windows
+          path: |
+            dist/Vlanya-Element-Windows-Setup-*.exe
+            dist/Vlanya-Element-Windows-Setup-*.exe.blockmap
+            dist/Vlanya-Element-Windows-*-portable.exe
+            dist/latest.yml
           if-no-files-found: error
 
       - name: Publish GitHub Release
@@ -54,5 +58,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: Vlanya Element ${{ github.ref_name }}
-          files: dist/Vlanya-Element-*-portable.exe
+          files: |
+            dist/Vlanya-Element-Windows-Setup-*.exe
+            dist/Vlanya-Element-Windows-Setup-*.exe.blockmap
+            dist/Vlanya-Element-Windows-*-portable.exe
+            dist/latest.yml
           generate_release_notes: true

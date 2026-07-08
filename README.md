@@ -46,19 +46,30 @@ tray/background behavior, and media constraints.
 .\run.bat
 ```
 
-## Build Portable EXE
+## Build Windows Release
 
 ```powershell
-.\build-portable.bat
+.\build-release.bat
 ```
 
-The portable executable is written to `dist\`.
+The Windows installer and portable executable are written to `dist\`.
+
+## Auto Updates
+
+Windows auto-updates are enabled for the NSIS installer build. Installed copies
+check GitHub Releases after startup and periodically while running. When an
+update has downloaded, Vlanya asks whether to restart immediately or install it
+later on quit.
+
+The portable executable remains available for manual download, but it does not
+self-update. Use the `Vlanya-Element-Windows-Setup-*.exe` installer when
+automatic updates are needed.
 
 ## GitHub Actions
 
 Pushes to `master`, version tags, pull requests, and manual workflow runs build
-the Windows portable executable. Download it from the
-`Vlanya-Element-portable` workflow artifact.
+the Windows installer and portable executable. Download them from the
+`Vlanya-Element-windows` workflow artifact.
 
-Pushing a version tag such as `v0.1.37` also publishes a GitHub Release with the
-portable executable attached.
+Pushing a version tag such as `v0.1.38` also publishes a GitHub Release with the
+installer, update metadata, and portable executable attached.
