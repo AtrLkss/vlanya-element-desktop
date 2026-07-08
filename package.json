@@ -1,8 +1,10 @@
 {
   "name": "vlanya-element-desktop",
-  "version": "0.1.36",
+  "version": "0.1.37",
   "private": true,
   "description": "Vlanya Element desktop wrapper with Windows screen-share audio loopback.",
+  "author": "Vlanya",
+  "homepage": "https://chat.vlanya.ru",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
@@ -27,6 +29,10 @@
     ],
     "extraResources": [
       {
+        "from": "build/icon.ico",
+        "to": "icon.ico"
+      },
+      {
         "from": "native/window-audio-capture/publish",
         "to": "window-audio-capture",
         "filter": [
@@ -35,12 +41,13 @@
       }
     ],
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         "portable"
       ]
     },
     "portable": {
-      "artifactName": "Vlanya-Element-${version}-portable.exe"
+      "artifactName": "Vlanya-Element-Windows-${version}-portable.exe"
     }
   },
   "dependencies": {

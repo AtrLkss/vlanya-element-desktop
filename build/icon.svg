@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Vlanya Element icon">
+  <defs>
+    <linearGradient id="bg" x1="34" y1="28" x2="222" y2="230" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffd1dc"/>
+      <stop offset="0.52" stop-color="#fcb2c5"/>
+      <stop offset="1" stop-color="#4a4c51"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="74" y1="70" x2="180" y2="198" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#f5f7fb"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="10" stdDeviation="10" flood-color="#3a2430" flood-opacity="0.22"/>
+    </filter>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="url(#bg)"/>
+  <path
+    d="M63 82c0-14 12-26 26-26h78c14 0 26 12 26 26v58c0 14-12 26-26 26h-24l-35 32c-6 5-15 1-15-7v-25h-4c-14 0-26-12-26-26V82Z"
+    fill="#1e2124"
+    opacity="0.9"
+    filter="url(#shadow)"
+  />
+  <path
+    d="M88 80h29l22 68 22-68h27l-34 92h-31L88 80Z"
+    fill="url(#mark)"
+  />
+  <circle cx="90" cy="88" r="7" fill="#fcb2c5"/>
+  <circle cx="166" cy="88" r="7" fill="#fcb2c5"/>
+</svg>

@@ -18,6 +18,8 @@ const {
 const CHAT_URL = "https://chat.vlanya.ru";
 const PRELOAD_PATH = path.join(__dirname, "preload.js");
 const FRAME_AUDIO_PATCH_PATH = path.join(__dirname, "frame-audio-patch.js");
+const APP_ICON_RESOURCE_NAME = "icon.ico";
+const APP_ICON_PATH = path.join(__dirname, "..", "build", APP_ICON_RESOURCE_NAME);
 const RNNOISE_BROWSER_BUNDLE_PATH = path.join(
   __dirname,
   "..",
@@ -85,6 +87,18 @@ function getFrameAudioPatchSource() {
     frameAudioPatchSource = fs.readFileSync(FRAME_AUDIO_PATCH_PATH, "utf8");
   }
   return `${getRnnoiseBrowserBundleSource()}\n${frameAudioPatchSource}\n//# sourceURL=vlanya-frame-audio-patch.js`;
+}
+
+function getAppIconPath() {
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, APP_ICON_RESOURCE_NAME);
+  }
+  return APP_ICON_PATH;
+}
+
+function createAppIconImage() {
+  const image = nativeImage.createFromPath(getAppIconPath());
+  return image.isEmpty() ? null : image;
 }
 
 function getRnnoiseBrowserBundleSource() {
@@ -397,6 +411,7 @@ function createMainWindow() {
     minWidth: 940,
     minHeight: 640,
     title: "Vlanya Element",
+    icon: getAppIconPath(),
     backgroundColor: "#101114",
     webPreferences: getAppWebPreferences(),
   });
@@ -422,6 +437,13 @@ function createTray() {
 }
 
 function createTrayImage() {
+  const appIcon = createAppIconImage();
+  if (appIcon) {
+    const image = appIcon.resize({ width: 32, height: 32 });
+    image.setTemplateImage(false);
+    return image;
+  }
+
   const trayPng =
     "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAL2SURBVFhH1Vc/aBNRGM/oFnOXa+5C2wv+qVpbbKPSGmm1EhE6SAeRQgWlUAgUVKxIHISA4KQILtmcBNFFJ51EcNFJF8HR0dHR8Xy/y7tr3nu/d7lEOvjBj0De937f3/d9SeG/FccZW3Tdyvl+yKO9Ec/z/JLrtxw3eO+Ug8iGUjn4XHKDdrFSqcmr/ybFYrhfEHaE8T/M4AB04bikGl6QVqfs/ybEuQHHS+XquqTML45XuTFi1BTIoqQeLDDOSPpRrR+LJpunUowvzlK9foiAnkoTdkHasyI/2roULb3biS5+f2hg+cO9aObu5citjtO7gOBuSVOmoGFsNUfEjdfb1LAOODixPG9wAAiu6FXnpElVkCJ26fC1laj5tUONZWH65qrBBZTK/htpclfkOzdSj8hHMZ4A/aFzAkYWMDyYYt6027Dy6X7k1UKDV6ArTfcEE0xXQsMx0gRn396KzrxoxZ/sPEH9yYbCC4iAf0nTvWmnKwDoakZ44cuDqLa6oOhOnJsXzXeH6qOELAtpGbBY9EO8a0YGhJa6VuvT1n45sNYw9NMJ6brBmn546OoSJWq82lb0dJzubtJ7lhdxO3YAw0E/PLLZpERzj9YVPR3HxSBi9zCgdN10PCMV+iHePiNaeL6l6OmoP96g9ywOtGMHeltPPcQkY0SocTA7pegmwAjGs2P3UFLjjtg5sQO9EaweggzdzsjQB2NTBw39k8+uU30gmCFOi+aPHYCIL37qCqg3IwPg3InOlbjm+LRFDmBO6NyYumEY7pPm+R5AlFnEeYCSsVVt7AMMBV0JwPtlxHlhW0h4+tL0rsArppxViixYX4zrf5MmVbFlAcCztDWlDqTdFjlAo0/EthUB9ASWDzOaIOvHiIS6BZmIFL0kF1PgSWFSYrgkwObEbwemnwAbV+l8m0BpkBPDAsaxdaWJfIJZzchGQDdX5EzkmP6oEeaCeFU/MhtuGIlXtigL+91oAP8fkzm/F9L77xC0UaJ+4PvhUl0o/AVHY9dvalvirAAAAABJRU5ErkJggg==";
   const image = nativeImage.createFromDataURL(`data:image/png;base64,${trayPng}`);

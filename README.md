@@ -11,11 +11,11 @@ Microphone capture is also patched to request browser-side `noiseSuppression`,
 `echoCancellation`, and `autoGainControl` for calls. On top of that, microphone
 tracks are routed through a WebAudio voice chain before WebRTC sees the track.
 
-The default microphone mode is `deepfilter`: it runs DeepFilterNet3 through a
-WASM AudioWorklet before WebRTC sees the track. The current test build keeps
-this path DeepFilterNet-only: the local voice gate, click killer, high-pass,
-low-pass, compressor, browser noise suppression, echo cancellation, and auto
-gain control are disabled.
+The default microphone mode is `rnnoise`: it runs RNNoise through a WASM
+AudioWorklet before WebRTC sees the track. The current test build keeps this
+path RNNoise-only: the local voice gate, click killer, high-pass, low-pass,
+compressor, browser noise suppression, echo cancellation, and auto gain control
+are disabled.
 
 A visible audio-route indicator is injected into the app. It shows whether
 Element Call is currently sending a processed microphone track, a raw microphone
@@ -26,12 +26,13 @@ diagnosed from the top-level chat window.
 
 The main process also injects a small page-context fallback patch into allowed
 frames and guest webviews. This catches Element Call contexts where the normal
-preload script is not loaded and applies the same DeepFilterNet-only path there.
+preload script is not loaded and applies the same RNNoise-only path there.
 
 For testing, the page exposes
+`window.vlanyaNoiseSuppression.setRnnoise(true | false)`,
 `window.vlanyaNoiseSuppression.setDeepFilterNet(true | false)`,
 `window.vlanyaNoiseSuppression.setExtreme(true | false)`, and
-`window.vlanyaNoiseSuppression.setMode("normal" | "extreme" | "deepfilter")`.
+`window.vlanyaNoiseSuppression.setMode("normal" | "extreme" | "rnnoise")`.
 Rejoin the call after changing the mode so Element captures the microphone
 again.
 
@@ -52,3 +53,12 @@ tray/background behavior, and media constraints.
 ```
 
 The portable executable is written to `dist\`.
+
+## GitHub Actions
+
+Pushes to `master`, version tags, pull requests, and manual workflow runs build
+the Windows portable executable. Download it from the
+`Vlanya-Element-portable` workflow artifact.
+
+Pushing a version tag such as `v0.1.37` also publishes a GitHub Release with the
+portable executable attached.
