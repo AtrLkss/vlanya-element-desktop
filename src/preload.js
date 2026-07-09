@@ -232,7 +232,7 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
   const audioRouteState = {
     level: "ready",
     status: "MIC PATCH BOOTING",
-    detail: "waiting for Element Call audio sender",
+    detail: "waiting for Vlanya Call audio sender",
     updatedAt: Date.now(),
   };
   const relayedAudioRoutes = new Map();
@@ -438,7 +438,7 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
 
     if (logKey !== lastAudioRouteLog) {
       lastAudioRouteLog = logKey;
-      const message = `[Vlanya Element][audio-route] ${nextStatus}: ${nextDetail}`;
+      const message = `[Vlanya Chat][audio-route] ${nextStatus}: ${nextDetail}`;
       if (nextLevel === "raw") {
         console.error(message);
       } else if (nextLevel === "pending") {
@@ -479,7 +479,7 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
           const entry = path.join(__dirname, "..", "node_modules", "@shiguredo", "rnnoise-wasm", "dist", "rnnoise.js");
           return import(pathToFileURL(entry).href);
         } catch (error) {
-          console.warn("[Vlanya Element] RNNoise local module lookup failed, trying browser import.", error);
+          console.warn("[Vlanya Chat] RNNoise local module lookup failed, trying browser import.", error);
         }
       }
 
@@ -566,7 +566,7 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
     } catch (_) {
       // Ignore storage failures; the current page can still use the default mode.
     }
-    console.info(`[Vlanya Element] microphone noise suppression mode set to "${nextMode}". Rejoin the call to recapture the microphone.`);
+    console.info(`[Vlanya Chat] microphone noise suppression mode set to "${nextMode}". Rejoin the call to recapture the microphone.`);
     return nextMode;
   };
 
@@ -1027,11 +1027,11 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
         rnnoiseProcessor = rnnoise.processor;
         source.connect(rnnoiseNode);
         rnnoiseNode.connect(destination);
-        console.info("[Vlanya Element] stable RNNoise microphone track is ready before WebRTC send.");
+        console.info("[Vlanya Chat] stable RNNoise microphone track is ready before WebRTC send.");
         updateAudioRouteIndicator("processed", "RNNOISE MIC READY BEFORE SEND", formatTrackInfo(processedTrack));
         return processedTrack;
       } catch (error) {
-        console.warn("[Vlanya Element] RNNoise processing failed, passing microphone through the stable output track.", error);
+        console.warn("[Vlanya Chat] RNNoise processing failed, passing microphone through the stable output track.", error);
         try {
           source.connect(destination);
         } catch (_) {
@@ -1192,7 +1192,7 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
           window.webkitRTCPeerConnection = WrappedPeerConnection;
         }
       } catch (error) {
-        console.warn("[Vlanya Element] failed to patch RTCPeerConnection constructor.", error);
+        console.warn("[Vlanya Chat] failed to patch RTCPeerConnection constructor.", error);
       }
     }
 
@@ -1215,7 +1215,7 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
           processedEntry.ready.then(() => {
             reportOutgoingAudioTrack("addTrack processed-first ready", sender?.track || processedEntry.track);
           }).catch((error) => {
-            console.warn("[Vlanya Element] failed to prepare processed-first outgoing audio track.", error);
+            console.warn("[Vlanya Chat] failed to prepare processed-first outgoing audio track.", error);
           });
           return sender;
         };
@@ -1240,7 +1240,7 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
           processedEntry.ready.then(() => {
             reportOutgoingAudioTrack("addTransceiver processed-first ready", transceiver?.sender?.track || processedEntry.track);
           }).catch((error) => {
-            console.warn("[Vlanya Element] failed to prepare processed-first transceiver audio track.", error);
+            console.warn("[Vlanya Chat] failed to prepare processed-first transceiver audio track.", error);
           });
           return transceiver;
         };
@@ -1273,7 +1273,7 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
               return result;
             });
           }).catch((error) => {
-            console.warn("[Vlanya Element] failed to process replaceTrack audio, using original track.", error);
+            console.warn("[Vlanya Chat] failed to process replaceTrack audio, using original track.", error);
             return Promise.resolve(originalReplaceTrack.call(this, track)).then((result) => {
               updateAudioRouteIndicator("raw", "RAW MIC: REPLACETRACK FALLBACK", `${formatTrackInfo(track)} / ${error?.message || error}`);
               return result;
@@ -1338,7 +1338,7 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
     }
 
     Object.defineProperty(mediaDevices, "__vlanyaPatched", { value: true });
-    console.info(`[Vlanya Element] Element Call media capture patched for system audio and "${getNoiseMode()}" microphone suppression.`);
+    console.info(`[Vlanya Chat] Vlanya Call media capture patched for system audio and "${getNoiseMode()}" microphone suppression.`);
   };
 
   patch();

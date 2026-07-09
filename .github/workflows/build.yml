@@ -1,4 +1,4 @@
-name: Build Vlanya Element Desktop
+name: Build Vlanya Chat Desktop
 
 on:
   pull_request:
@@ -45,11 +45,11 @@ jobs:
       - name: Upload Windows release files
         uses: actions/upload-artifact@v4
         with:
-          name: Vlanya-Element-windows
+          name: Vlanya-Chat-windows
           path: |
-            dist/Vlanya-Element-Windows-Setup-*.exe
-            dist/Vlanya-Element-Windows-Setup-*.exe.blockmap
-            dist/Vlanya-Element-Windows-*-portable.exe
+            dist/Vlanya-Chat-Windows-Setup-*.exe
+            dist/Vlanya-Chat-Windows-Setup-*.exe.blockmap
+            dist/Vlanya-Chat-Windows-*-portable.exe
             dist/latest.yml
           if-no-files-found: error
 
@@ -57,10 +57,10 @@ jobs:
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          name: Vlanya Element ${{ github.ref_name }}
+          name: Vlanya Chat ${{ github.ref_name }}
           files: |
-            dist/Vlanya-Element-Windows-Setup-*.exe
-            dist/Vlanya-Element-Windows-Setup-*.exe.blockmap
-            dist/Vlanya-Element-Windows-*-portable.exe
+            dist/Vlanya-Chat-Windows-Setup-*.exe
+            dist/Vlanya-Chat-Windows-Setup-*.exe.blockmap
+            dist/Vlanya-Chat-Windows-*-portable.exe
             dist/latest.yml
           generate_release_notes: true

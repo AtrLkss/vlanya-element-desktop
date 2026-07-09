@@ -148,7 +148,7 @@ async function showUpdateMessage(options) {
 async function showManualUpdateFallback() {
   const result = await showUpdateMessage({
     type: "info",
-    title: "Vlanya Element",
+    title: "Vlanya Chat",
     message: "\u0410\u0432\u0442\u043e\u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u0435 \u0440\u0430\u0431\u043e\u0442\u0430\u0435\u0442 \u0432 \u0443\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d\u043d\u043e\u0439 \u0432\u0435\u0440\u0441\u0438\u0438 Vlanya.",
     detail: "\u0415\u0441\u043b\u0438 \u0442\u044b \u0437\u0430\u043f\u0443\u0441\u0442\u0438\u043b portable .exe, \u0441\u043a\u0430\u0447\u0430\u0439 Setup-\u0443\u0441\u0442\u0430\u043d\u043e\u0432\u0449\u0438\u043a \u0438\u0437 GitHub Release. \u041f\u043e\u0441\u043b\u0435 \u044d\u0442\u043e\u0433\u043e Vlanya \u0441\u043c\u043e\u0436\u0435\u0442 \u0441\u0430\u043c\u0430 \u043e\u0431\u043d\u043e\u0432\u043b\u044f\u0442\u044c\u0441\u044f.",
     buttons: ["\u041e\u0442\u043a\u0440\u044b\u0442\u044c Release", "OK"],
@@ -165,7 +165,7 @@ async function promptInstallDownloadedUpdate() {
   const result = await showUpdateMessage({
     type: "info",
     title: "\u041e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u0435 Vlanya",
-    message: `Vlanya Element${versionText} \u0441\u043a\u0430\u0447\u0430\u043d\u0430 \u0438 \u0433\u043e\u0442\u043e\u0432\u0430 \u043a \u0443\u0441\u0442\u0430\u043d\u043e\u0432\u043a\u0435.`,
+    message: `Vlanya Chat${versionText} \u0441\u043a\u0430\u0447\u0430\u043d\u0430 \u0438 \u0433\u043e\u0442\u043e\u0432\u0430 \u043a \u0443\u0441\u0442\u0430\u043d\u043e\u0432\u043a\u0435.`,
     detail: "\u041f\u0435\u0440\u0435\u0437\u0430\u043f\u0443\u0441\u0442\u0438 Vlanya, \u0447\u0442\u043e\u0431\u044b \u043f\u043e\u0441\u0442\u0430\u0432\u0438\u0442\u044c \u043d\u043e\u0432\u0443\u044e \u0432\u0435\u0440\u0441\u0438\u044e. \u041c\u043e\u0436\u043d\u043e \u0441\u0434\u0435\u043b\u0430\u0442\u044c \u044d\u0442\u043e \u043f\u043e\u0437\u0436\u0435: \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u0435 \u043f\u043e\u0441\u0442\u0430\u0432\u0438\u0442\u0441\u044f \u043f\u0440\u0438 \u0432\u044b\u0445\u043e\u0434\u0435.",
     buttons: ["\u041f\u0435\u0440\u0435\u0437\u0430\u043f\u0443\u0441\u0442\u0438\u0442\u044c", "\u041f\u043e\u0437\u0436\u0435"],
     defaultId: 0,
@@ -191,7 +191,7 @@ async function checkForUpdates({ manual = false } = {}) {
       manualUpdateCheckPending = true;
       await showUpdateMessage({
         type: "info",
-        title: "Vlanya Element",
+        title: "Vlanya Chat",
         message: "\u0423\u0436\u0435 \u043f\u0440\u043e\u0432\u0435\u0440\u044f\u044e \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u044f.",
         buttons: ["OK"],
       });
@@ -222,7 +222,7 @@ function installDownloadedUpdate() {
   if (!autoUpdater || !updateReadyToInstall) {
     showUpdateMessage({
       type: "info",
-      title: "Vlanya Element",
+      title: "Vlanya Chat",
       message: "\u0413\u043e\u0442\u043e\u0432\u043e\u0433\u043e \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u044f \u043f\u043e\u043a\u0430 \u043d\u0435\u0442.",
       buttons: ["OK"],
     });
@@ -438,7 +438,7 @@ function rememberScreenAudioExcludingElement(source) {
   pendingWindowAudioCapture = {
     captureMode: "exclude",
     sourceId: source.id,
-    sourceName: `${source.name || "Screen"} without Element audio`,
+    sourceName: `${source.name || "Screen"} without Vlanya Chat audio`,
     processId: process.pid,
     expiresAt: Date.now() + 15000,
   };
@@ -606,7 +606,7 @@ function createMainWindow() {
     height: 820,
     minWidth: 940,
     minHeight: 640,
-    title: "Vlanya Element",
+    title: "Vlanya Chat",
     icon: getAppIconPath(),
     backgroundColor: "#101114",
     webPreferences: getAppWebPreferences(),
@@ -626,7 +626,7 @@ function createMainWindow() {
 function createTray() {
   if (tray) return;
   tray = new Tray(createTrayImage());
-  tray.setToolTip("Vlanya Element");
+  tray.setToolTip("Vlanya Chat");
   tray.setContextMenu(buildTrayMenu());
   tray.on("click", toggleMainWindow);
   tray.on("double-click", showMainWindow);

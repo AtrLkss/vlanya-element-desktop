@@ -1,8 +1,8 @@
 {
   "name": "vlanya-element-desktop",
-  "version": "0.1.39",
+  "version": "0.1.40",
   "private": true,
-  "description": "Vlanya Element desktop wrapper with Windows screen-share audio loopback.",
+  "description": "Vlanya Chat desktop wrapper with Windows screen-share audio loopback.",
   "author": "Vlanya",
   "homepage": "https://chat.vlanya.ru",
   "main": "src/main.js",
@@ -18,7 +18,7 @@
   },
   "build": {
     "appId": "ru.vlanya.element",
-    "productName": "Vlanya Element",
+    "productName": "Vlanya Chat",
     "directories": {
       "output": "dist"
     },
@@ -56,17 +56,17 @@
       ]
     },
     "nsis": {
-      "artifactName": "Vlanya-Element-Windows-Setup-${version}.${ext}",
+      "artifactName": "Vlanya-Chat-Windows-Setup-${version}.${ext}",
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "deleteAppDataOnUninstall": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Vlanya Element"
+      "shortcutName": "Vlanya Chat"
     },
     "portable": {
-      "artifactName": "Vlanya-Element-Windows-${version}-portable.exe"
+      "artifactName": "Vlanya-Chat-Windows-${version}-portable.exe"
     }
   },
   "dependencies": {
