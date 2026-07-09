@@ -52,6 +52,7 @@ jobs:
             dist/Vlanya-Chat-Windows-*-portable.exe
             dist/latest.yml
           if-no-files-found: error
+          retention-days: 1
 
       - name: Publish GitHub Release
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
