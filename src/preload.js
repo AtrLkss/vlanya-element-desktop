@@ -629,6 +629,19 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
     });
   };
 
+  const exposeClipboardBridge = () => {
+    if (window.vlanyaClipboard || !ipcRenderer) return;
+
+    Object.defineProperty(window, "vlanyaClipboard", {
+      value: {
+        copyImageDataUrl: (dataUrl) => ipcRenderer.invoke("vlanya-clipboard:copy-image", dataUrl),
+      },
+      configurable: false,
+      enumerable: false,
+      writable: false,
+    });
+  };
+
   const isAllowedWindowAudioRelayOrigin = (origin) => {
     if (!origin || origin === "null") return true;
     try {
@@ -1290,6 +1303,7 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
     installAudioRouteRelayListener();
     exposeNoiseControls();
     exposeWindowAudioBridge();
+    exposeClipboardBridge();
     installWindowAudioRelay();
 
     if (!IS_ELEMENT_CALL_FRAME) {

@@ -1,6 +1,6 @@
 {
   "name": "vlanya-element-desktop",
-  "version": "0.1.40",
+  "version": "0.1.41",
   "private": true,
   "description": "Vlanya Chat desktop wrapper with Windows screen-share audio loopback.",
   "author": "Vlanya",

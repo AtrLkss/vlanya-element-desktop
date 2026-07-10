@@ -6,6 +6,7 @@ const {
   app,
   BrowserWindow,
   Menu,
+  clipboard,
   desktopCapturer,
   dialog,
   ipcMain,
@@ -976,6 +977,25 @@ ipcMain.handle("picker:refresh", async () => {
   } catch (error) {
     return { ok: false, error: error?.message || String(error) };
   }
+});
+
+ipcMain.handle("vlanya-clipboard:copy-image", (event, dataUrl) => {
+  const frame = event.senderFrame;
+  if (!isWindowAudioIpcFrameAllowed(frame)) {
+    return { ok: false, error: "frame-not-allowed" };
+  }
+
+  if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:image/")) {
+    return { ok: false, error: "invalid-image" };
+  }
+
+  const image = nativeImage.createFromDataURL(dataUrl);
+  if (image.isEmpty()) {
+    return { ok: false, error: "empty-image" };
+  }
+
+  clipboard.writeImage(image);
+  return { ok: true };
 });
 
 ipcMain.handle("vlanya-window-audio:start", (event) => {
