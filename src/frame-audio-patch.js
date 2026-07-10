@@ -13,8 +13,25 @@
 
   const ROUTE_TYPE = "vlanya-audio-route-state";
   const WINDOW_AUDIO_RELAY_TYPE = "vlanya-window-audio-relay";
+  const MEDIA_SETTINGS_RELAY_TYPE = "vlanya-media-settings-relay";
   const FRAME_ID = `injected-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const RNNOISE_PCM_SCALE = 32768;
+  const SCREEN_SHARE_PROFILES = {
+    economy: { width: 1280, height: 720 },
+    balanced: { width: 1920, height: 1080 },
+    sharp: { width: 2560, height: 1440 },
+    source: { width: null, height: null },
+  };
+  const SCREEN_SHARE_FPS_OPTIONS = [15, 30, 60];
+  const DEFAULT_MEDIA_SETTINGS = {
+    noiseMode: "rnnoise",
+    screenShare: {
+      profile: "balanced",
+      fps: 30,
+      width: 1920,
+      height: 1080,
+    },
+  };
   const createWindowAudioRelayBridge = () => {
     let target = null;
     try {
@@ -146,6 +163,80 @@
     autoGainControl: false,
     channelCount: { ideal: 1 },
   };
+  let mediaSettings = { ...DEFAULT_MEDIA_SETTINGS, screenShare: { ...DEFAULT_MEDIA_SETTINGS.screenShare } };
+  let mediaSettingsRequestCounter = 0;
+
+  const normalizeMediaSettings = (settings = {}) => {
+    const noiseMode = settings.noiseMode === "rnnoise" ? "rnnoise" : "normal";
+    const incomingScreenShare = settings.screenShare || {};
+    const profile = SCREEN_SHARE_PROFILES[incomingScreenShare.profile]
+      ? incomingScreenShare.profile
+      : DEFAULT_MEDIA_SETTINGS.screenShare.profile;
+    const fps = SCREEN_SHARE_FPS_OPTIONS.includes(Number(incomingScreenShare.fps))
+      ? Number(incomingScreenShare.fps)
+      : DEFAULT_MEDIA_SETTINGS.screenShare.fps;
+    const profileDefinition = SCREEN_SHARE_PROFILES[profile] || SCREEN_SHARE_PROFILES.balanced;
+
+    return {
+      noiseMode,
+      screenShare: {
+        profile,
+        fps,
+        width: profileDefinition.width,
+        height: profileDefinition.height,
+      },
+    };
+  };
+
+  const setMediaSettings = (settings) => {
+    mediaSettings = normalizeMediaSettings(settings);
+    return mediaSettings;
+  };
+
+  const requestMediaSettingsFromTop = (timeoutMs = 450) => {
+    if (IS_TOP_FRAME) return Promise.resolve(mediaSettings);
+
+    return new Promise((resolve) => {
+      const requestId = `${FRAME_ID}-media-${++mediaSettingsRequestCounter}`;
+      const onMessage = (event) => {
+        const data = event?.data;
+        if (!data || data.type !== MEDIA_SETTINGS_RELAY_TYPE || data.action !== "settings") return;
+        if (data.requestId && data.requestId !== requestId) return;
+        window.removeEventListener("message", onMessage, true);
+        clearTimeout(timer);
+        resolve(setMediaSettings(data.settings));
+      };
+      const timer = window.setTimeout(() => {
+        window.removeEventListener("message", onMessage, true);
+        resolve(mediaSettings);
+      }, timeoutMs);
+
+      window.addEventListener("message", onMessage, true);
+      try {
+        window.top?.postMessage(
+          {
+            type: MEDIA_SETTINGS_RELAY_TYPE,
+            action: "requestSettings",
+            requestId,
+            frameId: FRAME_ID,
+          },
+          "*",
+        );
+      } catch (_) {
+        clearTimeout(timer);
+        window.removeEventListener("message", onMessage, true);
+        resolve(mediaSettings);
+      }
+    });
+  };
+
+  window.addEventListener("message", (event) => {
+    const data = event?.data;
+    if (!data || data.type !== MEDIA_SETTINGS_RELAY_TYPE || data.action !== "settings") return;
+    setMediaSettings(data.settings);
+  });
+
+  void requestMediaSettingsFromTop(900);
 
   const activePeerConnections = new Set();
   const displayAudioByVideoTrack = new WeakMap();
@@ -207,11 +298,18 @@
   };
 
   const shouldProcessAudio = (track) =>
-    Boolean(track && track.kind === "audio" && !track.__vlanyaRnnoiseOnly && !track.__vlanyaDisplayAudio);
+    Boolean(
+      mediaSettings.noiseMode === "rnnoise" &&
+        track &&
+        track.kind === "audio" &&
+        !track.__vlanyaRnnoiseOnly &&
+        !track.__vlanyaDisplayAudio,
+    );
 
   const withAudioProcessing = (constraints = {}) => {
     if (!constraints || typeof constraints !== "object") return constraints;
     if (!("audio" in constraints) || constraints.audio === false) return constraints;
+    if (mediaSettings.noiseMode !== "rnnoise") return constraints;
     const audio = constraints.audio && typeof constraints.audio === "object" ? { ...constraints.audio } : {};
     return {
       ...constraints,
@@ -220,6 +318,55 @@
         ...AUDIO_PROCESSING,
       },
     };
+  };
+
+  const getScreenShareVideoConstraints = () => {
+    const screenShare = mediaSettings.screenShare || DEFAULT_MEDIA_SETTINGS.screenShare;
+    const constraints = {
+      frameRate: {
+        ideal: screenShare.fps,
+        max: screenShare.fps,
+      },
+    };
+
+    if (screenShare.width && screenShare.height) {
+      constraints.width = {
+        ideal: screenShare.width,
+        max: screenShare.width,
+      };
+      constraints.height = {
+        ideal: screenShare.height,
+        max: screenShare.height,
+      };
+      constraints.resizeMode = "crop-and-scale";
+    }
+
+    return constraints;
+  };
+
+  const withScreenShareVideoSettings = (constraints = {}) => {
+    const next = constraints && typeof constraints === "object" ? constraints : {};
+    const video = next.video;
+    if (video === false) return next;
+
+    return {
+      ...next,
+      video: {
+        ...(video && typeof video === "object" ? video : {}),
+        ...getScreenShareVideoConstraints(),
+      },
+    };
+  };
+
+  const applyScreenShareTrackSettings = async (stream) => {
+    const constraints = getScreenShareVideoConstraints();
+    await Promise.all(
+      Array.from(stream?.getVideoTracks?.() || []).map((track) =>
+        track.applyConstraints?.(constraints).catch((error) => {
+          console.warn("[Vlanya Chat] injected screen share quality constraints were ignored.", error?.message || error);
+        }),
+      ),
+    );
   };
 
   const makeAudioContext = () => {
@@ -818,13 +965,14 @@
     const originalDisplayMedia = mediaDevices.getDisplayMedia?.bind(mediaDevices);
     if (originalDisplayMedia) {
       mediaDevices.getDisplayMedia = async (constraints = {}) => {
+        await requestMediaSettingsFromTop();
         let next = constraints;
         if (!next || typeof next !== "object") next = {};
         const stream = await originalDisplayMedia({
-          ...next,
-          video: next.video ?? true,
+          ...withScreenShareVideoSettings(next),
           audio: true,
         });
+        await applyScreenShareTrackSettings(stream);
         if (!stream.getAudioTracks().length) {
           const windowAudioTrack = await createWindowProcessAudioTrack();
           if (windowAudioTrack) {

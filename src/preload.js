@@ -17,6 +17,27 @@
   const NOISE_MODE_KEY = "vlanya.noiseSuppressionMode";
   const DEFAULT_NOISE_MODE = "rnnoise";
   const VALID_NOISE_MODES = new Set(["normal", "extreme", "rnnoise"]);
+  const MEDIA_SETTINGS_RELAY_TYPE = "vlanya-media-settings-relay";
+  const SCREEN_SHARE_PROFILE_KEY = "vlanya.screenShareProfile";
+  const SCREEN_SHARE_FPS_KEY = "vlanya.screenShareFps";
+  const DEFAULT_SCREEN_SHARE_PROFILE = "balanced";
+  const DEFAULT_SCREEN_SHARE_FPS = 30;
+  const SCREEN_SHARE_PROFILES = {
+    economy: { label: "\u042d\u043a\u043e\u043d\u043e\u043c\u0438\u044f (720p)", width: 1280, height: 720 },
+    balanced: {
+      label: "\u0421\u0431\u0430\u043b\u0430\u043d\u0441\u0438\u0440\u043e\u0432\u0430\u043d\u043e (1080p)",
+      width: 1920,
+      height: 1080,
+    },
+    sharp: { label: "\u0427\u0451\u0442\u043a\u043e (1440p)", width: 2560, height: 1440 },
+    source: {
+      label: "\u0411\u0435\u0437 \u043e\u0433\u0440\u0430\u043d\u0438\u0447\u0435\u043d\u0438\u044f",
+      width: null,
+      height: null,
+    },
+  };
+  const SCREEN_SHARE_FPS_OPTIONS = [15, 30, 60];
+  const VALID_SCREEN_SHARE_PROFILES = new Set(Object.keys(SCREEN_SHARE_PROFILES));
   const RNNOISE_PACKAGE = "@shiguredo/rnnoise-wasm";
   const RNNOISE_PCM_SCALE = 32768;
   const WORKLET_NAME = "vlanya-voice-gate";
@@ -567,8 +588,66 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
       // Ignore storage failures; the current page can still use the default mode.
     }
     console.info(`[Vlanya Chat] microphone noise suppression mode set to "${nextMode}". Rejoin the call to recapture the microphone.`);
+    broadcastMediaSettings();
     return nextMode;
   };
+
+  const getScreenShareProfile = () => {
+    try {
+      const storedProfile = window.localStorage?.getItem(SCREEN_SHARE_PROFILE_KEY);
+      return VALID_SCREEN_SHARE_PROFILES.has(storedProfile) ? storedProfile : DEFAULT_SCREEN_SHARE_PROFILE;
+    } catch (_) {
+      return DEFAULT_SCREEN_SHARE_PROFILE;
+    }
+  };
+
+  const getScreenShareFps = () => {
+    try {
+      const storedFps = Number(window.localStorage?.getItem(SCREEN_SHARE_FPS_KEY));
+      return SCREEN_SHARE_FPS_OPTIONS.includes(storedFps) ? storedFps : DEFAULT_SCREEN_SHARE_FPS;
+    } catch (_) {
+      return DEFAULT_SCREEN_SHARE_FPS;
+    }
+  };
+
+  const getScreenShareSettings = () => {
+    const profile = getScreenShareProfile();
+    const definition = SCREEN_SHARE_PROFILES[profile] || SCREEN_SHARE_PROFILES[DEFAULT_SCREEN_SHARE_PROFILE];
+    return {
+      profile,
+      fps: getScreenShareFps(),
+      label: definition.label,
+      width: definition.width,
+      height: definition.height,
+    };
+  };
+
+  const setScreenShareProfile = (profile) => {
+    const nextProfile = VALID_SCREEN_SHARE_PROFILES.has(profile) ? profile : DEFAULT_SCREEN_SHARE_PROFILE;
+    try {
+      window.localStorage?.setItem(SCREEN_SHARE_PROFILE_KEY, nextProfile);
+    } catch (_) {
+      // Keep using the normalized value in this page even if storage is unavailable.
+    }
+    broadcastMediaSettings();
+    return getScreenShareSettings();
+  };
+
+  const setScreenShareFps = (fps) => {
+    const nextFps = SCREEN_SHARE_FPS_OPTIONS.includes(Number(fps)) ? Number(fps) : DEFAULT_SCREEN_SHARE_FPS;
+    try {
+      window.localStorage?.setItem(SCREEN_SHARE_FPS_KEY, String(nextFps));
+    } catch (_) {
+      // Keep using the normalized value in this page even if storage is unavailable.
+    }
+    broadcastMediaSettings();
+    return getScreenShareSettings();
+  };
+
+  const getMediaSettingsSnapshot = () => ({
+    noiseMode: getNoiseMode(),
+    screenShare: getScreenShareSettings(),
+  });
 
   const exposeNoiseControls = () => {
     if (window.vlanyaNoiseSuppression) return;
@@ -578,9 +657,9 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
         setMode: setNoiseMode,
         setExtreme: (enabled = true) => setNoiseMode(enabled ? "extreme" : "normal"),
         isExtreme: () => getNoiseMode() === "extreme",
-        setRnnoise: (enabled = true) => setNoiseMode(enabled ? "rnnoise" : "extreme"),
+        setRnnoise: (enabled = true) => setNoiseMode(enabled ? "rnnoise" : "normal"),
         isRnnoise: () => getNoiseMode() === "rnnoise",
-        setDeepFilterNet: (enabled = true) => setNoiseMode(enabled ? "rnnoise" : "extreme"),
+        setDeepFilterNet: (enabled = true) => setNoiseMode(enabled ? "rnnoise" : "normal"),
         isDeepFilterNet: () => getNoiseMode() === "rnnoise",
         getRouteState: () => ({ ...audioRouteState }),
         showRouteIndicator: () => {
@@ -593,6 +672,30 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
           document.getElementById(AUDIO_ROUTE_INDICATOR_ID)?.remove();
           return { ...audioRouteState };
         },
+      },
+      configurable: false,
+      enumerable: false,
+      writable: false,
+    });
+  };
+
+  const exposeScreenShareControls = () => {
+    if (window.vlanyaScreenShare) return;
+    Object.defineProperty(window, "vlanyaScreenShare", {
+      value: {
+        getSettings: getScreenShareSettings,
+        getProfile: getScreenShareProfile,
+        setProfile: setScreenShareProfile,
+        getFps: getScreenShareFps,
+        setFps: setScreenShareFps,
+        getProfiles: () =>
+          Object.entries(SCREEN_SHARE_PROFILES).map(([id, definition]) => ({
+            id,
+            label: definition.label,
+            width: definition.width,
+            height: definition.height,
+          })),
+        getFrameRates: () => [...SCREEN_SHARE_FPS_OPTIONS],
       },
       configurable: false,
       enumerable: false,
@@ -665,6 +768,61 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
         // The child frame may already be gone.
       }
     }
+  };
+
+  const isAllowedMediaSettingsRelayOrigin = (origin) => isAllowedWindowAudioRelayOrigin(origin);
+
+  const postMediaSettingsMessage = (target, payload) => {
+    postWindowAudioRelayMessage(target, {
+      type: MEDIA_SETTINGS_RELAY_TYPE,
+      ...payload,
+    });
+  };
+
+  const broadcastMediaSettings = () => {
+    if (!IS_TOP_FRAME) return;
+    const payload = {
+      action: "settings",
+      settings: getMediaSettingsSnapshot(),
+      sentAt: Date.now(),
+    };
+
+    try {
+      for (let i = 0; i < window.frames.length; i += 1) {
+        window.frames[i]?.postMessage({ type: MEDIA_SETTINGS_RELAY_TYPE, ...payload }, "*");
+      }
+    } catch (_) {
+      // Broadcast is best-effort; call frames can also request the settings when they capture media.
+    }
+  };
+
+  const installMediaSettingsRelay = () => {
+    if (!IS_TOP_FRAME || window.__vlanyaMediaSettingsRelayInstalled) return;
+    Object.defineProperty(window, "__vlanyaMediaSettingsRelayInstalled", { value: true });
+
+    window.addEventListener("message", (event) => {
+      const data = event?.data;
+      if (!data || data.type !== MEDIA_SETTINGS_RELAY_TYPE || data.action !== "requestSettings") return;
+      if (!isAllowedMediaSettingsRelayOrigin(event.origin) || !event.source) return;
+
+      postMediaSettingsMessage(
+        { source: event.source, origin: event.origin },
+        {
+          action: "settings",
+          requestId: data.requestId || null,
+          settings: getMediaSettingsSnapshot(),
+          sentAt: Date.now(),
+        },
+      );
+    });
+
+    window.addEventListener("storage", (event) => {
+      if ([NOISE_MODE_KEY, SCREEN_SHARE_PROFILE_KEY, SCREEN_SHARE_FPS_KEY].includes(event.key)) {
+        broadcastMediaSettings();
+      }
+    });
+
+    window.setTimeout(broadcastMediaSettings, 0);
   };
 
   const installWindowAudioRelay = () => {
@@ -750,6 +908,7 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
   const withAudioProcessing = (constraints = {}) => {
     if (!constraints || typeof constraints !== "object") return constraints;
     if (!("audio" in constraints) || constraints.audio === false) return constraints;
+    if (getNoiseMode() !== "rnnoise") return constraints;
 
     const audio =
       constraints.audio && typeof constraints.audio === "object"
@@ -763,6 +922,55 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
         ...AUDIO_PROCESSING,
       },
     };
+  };
+
+  const getScreenShareVideoConstraints = () => {
+    const settings = getScreenShareSettings();
+    const constraints = {
+      frameRate: {
+        ideal: settings.fps,
+        max: settings.fps,
+      },
+    };
+
+    if (settings.width && settings.height) {
+      constraints.width = {
+        ideal: settings.width,
+        max: settings.width,
+      };
+      constraints.height = {
+        ideal: settings.height,
+        max: settings.height,
+      };
+      constraints.resizeMode = "crop-and-scale";
+    }
+
+    return constraints;
+  };
+
+  const withScreenShareVideoSettings = (constraints = {}) => {
+    const next = constraints && typeof constraints === "object" ? constraints : {};
+    const video = next.video;
+    if (video === false) return next;
+
+    return {
+      ...next,
+      video: {
+        ...(video && typeof video === "object" ? video : {}),
+        ...getScreenShareVideoConstraints(),
+      },
+    };
+  };
+
+  const applyScreenShareTrackSettings = async (stream) => {
+    const constraints = getScreenShareVideoConstraints();
+    await Promise.all(
+      Array.from(stream?.getVideoTracks?.() || []).map((track) =>
+        track.applyConstraints?.(constraints).catch((error) => {
+          console.warn("[Vlanya Chat] screen share quality constraints were ignored.", error?.message || error);
+        }),
+      ),
+    );
   };
 
   const makeWorkletNode = async (context, mode) => {
@@ -962,7 +1170,13 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
   };
 
   const createStableProcessedAudioTrack = (track) => {
-    if (!track || track.kind !== "audio" || track.__vlanyaNoiseSuppressed || track.__vlanyaDisplayAudio) {
+    if (
+      getNoiseMode() !== "rnnoise" ||
+      !track ||
+      track.kind !== "audio" ||
+      track.__vlanyaNoiseSuppressed ||
+      track.__vlanyaDisplayAudio
+    ) {
       return { track, ready: Promise.resolve(track) };
     }
 
@@ -1112,7 +1326,13 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
   };
 
   const shouldProcessOutgoingAudioTrack = (track) =>
-    Boolean(track && track.kind === "audio" && !track.__vlanyaNoiseSuppressed && !track.__vlanyaDisplayAudio);
+    Boolean(
+      getNoiseMode() === "rnnoise" &&
+        track &&
+        track.kind === "audio" &&
+        !track.__vlanyaNoiseSuppressed &&
+        !track.__vlanyaDisplayAudio,
+    );
 
   const scanOutgoingAudioRoutes = () => {
     let sawMicrophoneSender = false;
@@ -1302,8 +1522,10 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
   const patch = () => {
     installAudioRouteRelayListener();
     exposeNoiseControls();
+    exposeScreenShareControls();
     exposeWindowAudioBridge();
     exposeClipboardBridge();
+    installMediaSettingsRelay();
     installWindowAudioRelay();
 
     if (!IS_ELEMENT_CALL_FRAME) {
@@ -1327,10 +1549,10 @@ registerProcessor("${WORKLET_NAME}", VlanyaVoiceGate);
         if (!next || typeof next !== "object") next = {};
 
         const stream = await originalDisplayMedia({
-          ...next,
-          video: next.video ?? true,
+          ...withScreenShareVideoSettings(next),
           audio: true,
         });
+        await applyScreenShareTrackSettings(stream);
         stopDisplayAudioWhenVideoEnds(stream);
         return markDisplayAudioTracks(stream);
       };
